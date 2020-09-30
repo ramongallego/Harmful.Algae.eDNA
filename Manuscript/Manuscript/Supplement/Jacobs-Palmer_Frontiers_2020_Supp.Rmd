@@ -1,0 +1,125 @@
+---
+title: "Environmental DNA Metabarcoding for Simultaneous Monitoring and Ecological Assessment of Many Harmful Algae: Supplementary Information"
+author:
+- Emily Jacobs-Palmer
+- Ramón Gallego
+- Kelly Cribari
+- Abigail Keller
+- Ryan P. Kelly
+output:
+  word_document: default
+  html_notebook: default
+---
+```{r LIBRARIES, echo = F, message = F, warning = F, include = F}
+requiredPackages <- list("tidyverse", "lubridate", "vegan", "seacarb",
+                         "modelr", "broom", "pander", "gridExtra", "here", 
+                         "tidymodels", "rstanarm", "loo", "tidybayes", "bayesplot")
+lapply(requiredPackages, library, character.only = TRUE)
+options(mc.cores = parallel::detectCores())
+
+```
+\small
+```{r TABS1_Locations, echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS1 <- read.csv(file = "TableS1_Locations.csv")
+
+pander(tableS1, caption = "Table S1: Sample location information. For each site,  abbreviation, location type (nearshore/intertidal), and latitude/longitude are given." , digits = c(0, 0, 6, 0, 6, 7), split.table = Inf)
+
+```
+\normalsize
+\clearpage
+\small
+```{r TABS2_HABseqs, fig.cap="\\label{fig:TABS2_AllHABs}Table S2: Complete list of potential HAB-forming ASV taxonomic assignments and COI sequences.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS2 <- read.csv(file = "TableS2_HABseqs.csv") %>% 
+  select(-1)
+
+pander(tableS2, caption = "Table S2: Complete list of potential HAB-forming ASV taxonomic assignments and COI sequences.", split.table = Inf)
+
+```
+\normalsize
+\clearpage
+\small
+```{r TABS3_Models, fig.cap="\\label{fig:TABS3_Models}Table S3: Complete list of logistic-regression models tested describing taxon occurrence as a function of sea-surface temperature, pH, and salinity.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS3 <- read.csv(file = "TableS3_Models.csv")
+
+pander(tableS3, caption = "Table S3: Complete list of logistic-regression models tested describing taxon occurrence as a function of sea-surface temperature, pH, and salinity.", split.table = Inf)
+
+```
+\normalsize
+\clearpage
+\small
+```{r TABS4_Alexandrium_2b2_CAP, fig.cap="\\label{fig:TABS4_Alexandrium_2b2_CAP}Table S4: Top ten taxa associated with Alexandrium_2b2 by CAP, with association strength and direction.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS4 <- read.csv(file = "TableS4_Alexandrium_2b2_CAP.csv") %>% 
+  select(-c(1,4))
+
+pander(tableS4, caption = "Table S4: Top ten taxa associated with Alexandrium_2b2 by CAP, with association strength and direction.")
+
+```
+
+```{r TABS5_Alexandrium_3fc_CAP, fig.cap="\\label{fig:TABS5_Alexandrium_3fc_CAP}Table S5: Top ten taxa associated with Alexandrium_3fc by CAP, with association strength and direction.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS5 <- read.csv(file = "TableS5_Alexandrium_3fc_CAP.csv") %>% 
+  select(-c(1,4))
+
+pander(tableS5, caption = "Table S5: Top ten taxa associated with Alexandrium_3fc by CAP, with association strength and direction.")
+
+```
+
+```{r TABS6_Hematodinium_449_CAP, fig.cap="\\label{fig:TABS6_Hematodinium_449_CAP}Table S6: Top ten taxa associated with Hematodinium_449 by CAP, with association strength and direction.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS6 <- read.csv(file = "TableS6_Hematodinium_449_CAP.csv") %>% 
+  select(-c(1,4))
+
+pander(tableS6, caption = "Table S6: Top ten taxa associated with Hematodinium_449 by CAP, with association strength and direction.")
+```
+
+```{r TABS7_Karlodinium_8ed_CAP, fig.cap="\\label{fig:TABS7_Karlodinium_8ed_CAP}Table S7: Top ten taxa associated with Karlodinium_8ed by CAP, with association strength and direction.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS7 <- read.csv(file = "TableS7_Karlodinium_8ed_CAP.csv") %>% 
+  select(-c(1,4))
+
+pander(tableS7, caption = "Table S7: Top ten taxa associated with Karlodinium_8ed by CAP, with association strength and direction.")
+
+```
+
+<!--FOR THIS TAXON BELOW THE CAP AXES HAVE BEEN REVERSED...WHY???-->
+
+```{r TABS8_Karlodinium_a27_CAP, fig.cap="\\label{fig:TABS8_Karlodinium_a27_CAP}Table S8: Top ten taxa associated with Karlodinium_a27 by CAP, with association strength and direction.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS8 <- read.csv(file = "TableS8_Karlodinium_a27_CAP.csv") %>% 
+  select(-c(1,4))
+
+pander(tableS8, caption = "Table S8: Top ten taxa associated with Karlodinium_a27 by CAP, with association strength and direction.")
+
+```
+
+```{r TABS9_Pseudonitzschia_4e5_CAP, fig.cap="\\label{fig:TABS9_Pseudonitzschia_4e5_CAP}Table S9: Top ten taxa associated with Pseudonitzschia_4e5 by CAP, with association strength and direction.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS9 <- read.csv(file = "TableS9_Pseudonitzschia_4e5_CAP.csv") %>% 
+  select(-c(1,4))
+
+pander(tableS9, caption = "Table S9: Top ten taxa associated with Pseudonitzschia_4e5 by CAP, with association strength and direction.")
+
+```
+
+```{r TABS10_Pseudonitzschia_d36_CAP, fig.cap="\\label{fig:TABS10_Pseudonitzschia_d36_CAP}Table S10: Top ten taxa associated with Pseudonitzschia_d36 by CAP, with association strength and direction.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS10 <- read.csv(file = "TableS10_Pseudonitzschia_d36_CAP.csv") %>% 
+  select(-c(1,4))
+
+pander(tableS10, caption = "Table S10: Top ten taxa associated with Pseudonitzschia_d36 by CAP, with association strength and direction.")
+
+```
+
+```{r TABS11_Pseudonitzschia_d40_CAP, fig.cap="\\label{fig:TABS11_Pseudonitzschia_d40_CAP}Table S11: Top ten taxa associated with Pseudonitzschia_d40 by CAP, with association strength and direction.", echo=F, message=FALSE, warning=FALSE, include = T}
+
+tableS11 <- read.csv(file = "TableS11_Pseudonitzschia_d40_CAP.csv") %>% 
+  select(-c(1,4))
+
+pander(tableS11, caption = "Table S11: Top ten taxa associated with Pseudonitzschia_d40 by CAP, with association strength and direction.")
+
+```
+
