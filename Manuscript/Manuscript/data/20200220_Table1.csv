@@ -1,0 +1,13 @@
+Type,Genus,SNVs,AAVs,Toxicity (target),Location
+Diatom,Chaetoceros,8,5,Gill irritation (finfish),Intertidal; Nearshore
+Diatom,Nitzschia,10,5,Domoic acid and derivatives (human),Intertidal
+Diatom,Pseudo-nitzschia,3,2,Domoic Acid (human),Intertidal; Nearshore
+Dinoflagellate,Alexandrium,2,2,Saxitoxin (human),Intertidal; Nearshore
+Dinoflagellate,Hematodinium,1,1,Parasitism (crab),Intertidal
+Dinoflagellate,Heterocapsa,2,2,Haemolysis (shellfish),Intertidal; Nearshore
+Dinoflagellate,Karlodinium,2,2,Karlotoxin (human),Intertidal; Nearshore
+Dinoflagellate,Woloszynskia,1,1,Reddening of water (general),Intertidal
+Haptophyte,Chrysochromulina,3,3,Haemolysis (shellfish),Intertidal; Nearshore
+Haptophyte,Phaeocystis,2,2,Oxygen depletion (general),Intertidal; Nearshore
+Raphidophyte,Chattonella,2,1,Reactive oxygen species (finfish),Intertidal; Nearshore
+Raphidophyte,Pseudochattonella,1,1,Gill irritation (finfish),Intertidal
