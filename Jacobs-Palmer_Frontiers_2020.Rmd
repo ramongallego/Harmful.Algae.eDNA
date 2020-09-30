@@ -1,0 +1,1170 @@
+---
+title: Environmental DNA Metabarcoding for Simultaneous Monitoring and Ecological
+  Assessment of Many Harmful Algae
+author:
+- Emily Jacobs-Palmer
+- Ramón Gallego
+- Kelly Cribari
+- Abigail Keller
+- Ryan P. Kelly
+header-includes:
+- \usepackage{gensymb}
+- \usepackage{fontspec}
+- \setmainfont{Open Sans}
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document:
+    fig_caption: yes
+    keep_tex: yes
+    number_sections: no
+    latex_engine: xelatex
+bibliography: MultiHABfinal.bib
+csl: PeerJ_citation.csl
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r LIBRARIES, echo = F, message = F, warning = F, include = F}
+requiredPackages <- list("tidyverse", "lubridate", "vegan", "seacarb",
+                         "modelr", "broom", "pander", "gridExtra", "here", 
+                         "tidymodels", "rstanarm", "loo", "tidybayes", "bayesplot")
+lapply(requiredPackages, library, character.only = TRUE)
+options(mc.cores = parallel::detectCores())
+
+```
+
+```{r FUNCTIONS, echo = F, message = F, warning = F, include = F, error = F}
+#CUSTOM FUNCTIONS
+
+#Take proportions from table of raw read counts with families/ASVs in rows, samples in columns
+PROP <- function(df) {sweep(df, MARGIN=2, colSums(df), FUN="/")}
+
+#Take indices using a table with proportions of reads with families/ASVs in rows, samples in columns
+INDEX <- function(df) {sweep(df, MARGIN=1, STATS=apply(df, MARGIN = 1, max), FUN="/")}
+
+#RPK added line to parse date
+EDNASPACETIME <- function(TAXON) {
+  asv.edna.HAB10.enviro %>% 
+  mutate("presence" = ifelse(x == 0, "Missing","Present")) %>% 
+  filter(str_detect(Taxon, TAXON)) %>% 
+  separate(sample, c("site", "month", "year", "depth")) %>%
+  unite("date", c(year, month)) %>% 
+  mutate(date = parse_date_time(date, orders = "ym")) %>% 
+  mutate(site = ordered(site, levels =  c("TW", "P402",  "PO",  "P11",  "LL", "P12", "TR", "P14", "SA", "P8"))) %>% 
+        ggplot(aes(x = date, y = site, size = edna, color = edna, shape = presence)) +
+          geom_point() +
+          scale_shape_manual(name="presence",values=c(Missing=4,Present=19)) +
+          theme(legend.position = "none") +
+          facet_wrap(~Taxon, ncol = 1) +
+          theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+          ylab("Site") + xlab("")
+}  
+
+#calculate classification rates (specificity / sensitivity / etc) for a given model
+#on a given test dataset. Note that as a measure of out-of-sample accuracy,
+#this should be used on a subset of test data, which must have been
+#omitted from the data on which the original model was trained. 
+PREDERROR <- function(mymodel, mydataset, outcomename){
+ 
+  if ("stanreg" %in% class(mymodel)) {
+    predict_temp <- posterior_predict(mymodel, 
+                                      mydataset,
+                                      seed = 123) %>%
+      colMeans()
+  } else {
+    predict_temp <- predict(mymodel,
+                            mydataset,
+                            type = "response"
+    )
+  }
+  
+  if(sum(predict_temp > 0.5) == 0){
+    confusion_mat <-   cbind(
+                        table(unlist(mydataset[,outcomename])), 
+                        c('FALSE' = length(predict_temp), 'TRUE' = 0)
+                        )
+  } else {
+    confusion_mat <- table(unlist(mydataset[,outcomename]), predict_temp > 0.5) # create confusion matrix
+  }
+  
+  accuracy <- sum(diag(confusion_mat)) / sum(confusion_mat) 
+  TP <- confusion_mat[2,2]
+  TN <- confusion_mat[1,1]
+  FP <- confusion_mat[1,2]
+  FN <- confusion_mat[2,1]
+  FNR <- FN/sum(confusion_mat[2,])
+  FPR <- FP/sum(confusion_mat[1,])
+  TPR <- as.numeric(TP/sum(confusion_mat[2,])) #sensitivity
+  TNR <- as.numeric(TN/sum(confusion_mat[1,])) #specificity
+  
+  return(
+    list(
+      "Accuracy" = accuracy,
+      "TruePositiveRate" = TPR,
+      "TrueNegativeRate" = TNR
+    )
+  )
+}
+
+PLOTCAP_PRESABS <- function(df, TAXON){
+  
+  myData <- df %>% 
+    mutate(edna = ifelse(edna > 0, 1, 0)) %>%
+    spread(key = Taxon, value = edna, fill = 0) %>% 
+    dplyr::rename("presence" = TAXON) %>% 
+    column_to_rownames("sample")
+  
+  
+  full.cap.results <- capscale(myData[,-which(names(myData)=="presence")] 
+                               ~ myData[,which(names(myData)=="presence")], 
+                               dist = "jaccard")
+  
+  community <- full.cap.results %>% 
+    scores() %>% 
+    magrittr::extract2("species") %>%
+    as.data.frame() %>% 
+    rownames_to_column("Taxon") %>% 
+    arrange(desc(abs(CAP1))) %>% #hmmm, how can we make this in the direction of the HAB cluster, whether + or -?
+    head(10)
+  
+  plot.cap.results <- full.cap.results %>% 
+    scores() %>% 
+    magrittr::extract2("sites") %>% 
+    as.data.frame()
+  
+  plot <- plot.cap.results %>% 
+    rownames_to_column("sample") %>% 
+    ggplot(aes(x = CAP1, y = MDS1, color = as.factor(myData[,which(names(myData)=="presence")]))) + 
+    geom_point() +
+    #geom_text(aes(x = CAP1, y = MDS1, label = sample), col = 'black', size = 3) +  #uncomment to plot sample names
+    geom_segment(data = community, aes(x = 0, y = 0, xend = CAP1, yend = MDS1), arrow =
+                   arrow(length=unit(0.2,"cm")), alpha = 0.75, color = 'black') +
+    #theme(legend.position = "none") +
+    guides(color=guide_legend(title="Taxon Present")) +
+    ggtitle(TAXON)
+  
+  print(plot)
+  #return(community)
+  
+}
+
+CAPSUPP_PRESABS <- function(df, TAXON){
+  
+      myData <- df %>%
+        mutate(edna = ifelse(edna > 0, 1, 0)) %>%
+        spread(key = Taxon, value = edna, fill = 0) %>%
+        dplyr::rename("presence" = TAXON) %>%
+        column_to_rownames("sample")
+      
+      full.cap.results <- capscale(
+        myData[, -which(names(myData) == "presence")] ~
+        myData[, which(names(myData) == "presence")],
+        dist = "jaccard")
+      
+      community <- full.cap.results %>% 
+        scores() %>% 
+        magrittr::extract2("species") %>%
+        as.data.frame() %>% 
+        rownames_to_column("Taxon") %>% 
+        arrange(desc(abs(CAP1))) %>% #hmmm, how can we make this in the direction of the HAB cluster, whether + or -?
+        head(10)
+        
+        return(community)
+      
+}
+
+
+CAPCOMM_PRESABS <- function(df, TAXON){
+  
+      myData <- asv.edna.all10 %>%
+        mutate(edna = ifelse(edna > 0, 1, 0)) %>%
+        spread(key = Taxon, value = edna, fill = 0) %>%
+        dplyr::rename("presence" = TAXON) %>%
+        column_to_rownames("sample")
+      
+      full.cap.results <- capscale(
+        myData[, -which(names(myData) == "presence")] ~
+        myData[, which(names(myData) == "presence")],
+        dist = "jaccard"
+      )
+      
+      full.cap.results %>%
+        scores() %>%
+        magrittr::extract2("species") %>%
+        as.data.frame() %>%
+        rownames_to_column("Predictor") %>%
+        arrange(desc(abs(CAP1))) %>% # hmmm, how can we make this in the direction of the HAB cluster, whether + or -?
+        head(1) %>%
+        select("Predictor", "CAP1") 
+  
+}
+      
+
+#inverse logit function
+invLogit <- function(x){exp(x)/(1 + exp(x))}
+```
+
+```{r DATA_ASV, echo = F, message = F, warning = F, include = F}
+# LOAD ASV DATA and rename samples to share same format
+
+#data from the Washington OA Center (WOAC) cruises
+asv.woac <- read.csv("../data/Copy_of_WOAC_ASV.csv", row.names = 1) %>% 
+  separate(sample, c("date", "site", "depth")) %>% 
+  filter(depth == "0") %>% 
+  mutate(date = str_replace(date,"Apr", "04_")) %>% 
+  mutate(date = str_replace(date,"Sep", "09_")) %>% 
+  separate(date, c("month", "year")) %>% 
+  unite("sample", c(site, month, year, depth), sep = "_") %>% 
+  select(Hash, sample, sumReads) %>% 
+  as.data.frame
+
+#data from Ramón Gallego et al., eDNA / OA study (Gallego et al. 2020, in revision for Proc B)
+asv.moncho <- read.csv("../data/Copy_of_ASV_table_all_together.csv") %>% 
+  separate(sample, c("site", "date")) %>% 
+  mutate(date = substr(date, 1, 6),
+         year = as.numeric(substr(date, 3, 4)),
+         month = as.numeric(substr(date, 5, 6))) %>% 
+  group_by(site, month, year, Hash) %>% 
+  mutate(sumReads = sum(nReads)) %>% 
+  select(-nReads) %>% 
+  select(-Miseq_run) %>% 
+  mutate("depth" = 0) %>% 
+  unite("sample", c(site, month, year, depth), sep = "_") %>% 
+  select(Hash, sample, sumReads) %>% 
+  as.data.frame()
+```
+
+```{r DATA_SWARM, echo = F, message = F, warning = F, include = F}
+#redo HAB taxonomy using swarm-based ASVs and select only samples from HC near surface
+
+
+
+#create combined asv table for using with swarm (Hash, nReads only)
+asv.multiHAB <- rbind(asv.woac, asv.moncho) %>% 
+  group_by(Hash) %>% 
+  summarize(nTotal = sum(sumReads)) #%>% 
+  #write.csv("../Submission_FrontiersEcolEvol_2020/Supplement/20190719_MultiHAB_ASV.csv")
+
+#create combined hash table for using with swarm
+moncho.hash.key <- read.csv("../data/Moncho_Hash_Key_all_together.csv", row.names = 1) %>% 
+  rownames_to_column("Hash")
+
+woac.hash.key <- read.csv("../data/WOAC_Hash_Key_all_together.csv", row.names = 1) %>% 
+  rownames_to_column("Hash")
+
+hash.multiHAB <- rbind(moncho.hash.key, woac.hash.key) %>% 
+  unique() %>% 
+  remove_rownames() %>% 
+  arrange(Hash) #%>% 
+  #write.csv("20190719_MultiHAB_Hash.csv")
+  
+#create combined original asv table with sample names returned
+asv.multiHAB.samples <- rbind(asv.woac, asv.moncho) #%>% 
+  #write.csv("20190719_MultiHAB_ASV_samples.csv")
+
+#Take data from Swarm and feed back into analysis
+
+#combined swarm asv #### Arg, this has sample names in old format, again... split and recombine####
+asv.swarm.moncho <- read.csv("../data/20190719_MultiHAB_Swarm_samples.csv") %>% 
+  filter(str_detect(sample, "_201")) %>% 
+  separate(sample, c("site", "date")) %>% 
+  mutate(date = substr(date, 1, 6),
+         year = as.numeric(substr(date, 3, 4)),
+         month = as.numeric(substr(date, 5, 6))) %>% 
+  group_by(site, month, year, Hash) %>% 
+  mutate("depth" = 0) %>% 
+  unite("sample", c(site, month, year, depth), sep = "_") %>% 
+  select(Hash, sample, nReads) %>% 
+  as.data.frame()
+  
+asv.swarm.woac <- read.csv("../data/20190719_MultiHAB_Swarm_samples.csv") %>% 
+  filter(str_detect(sample, "_P")) %>% 
+  separate(sample, c("date", "site", "depth")) %>% 
+  filter(depth == "0") %>% # see choice to exclude 5m samples based on sig difs in enviro.vars
+  mutate(date = str_replace(date,"Apr", "04_")) %>% 
+  mutate(date = str_replace(date,"Sep", "09_")) %>% 
+  separate(date, c("month", "year")) %>% 
+  unite("sample", c(site, month, year, depth), sep = "_") %>% 
+  select(Hash, sample, nReads) %>% 
+  as.data.frame()
+
+asv.swarm <- rbind(asv.swarm.moncho, asv.swarm.woac) %>% 
+  separate(sample, c("site", "month", "year", "depth")) %>% 
+  filter(site %in% c("P8", "P11", "P12", "P14","P402", "TW", "PO", "LL", "TR", "SA")) %>% 
+  filter(depth == "0") %>% #see choice to use just surface collections due to significant diffs in envirovars
+  filter(month != "10") %>% #remove October - just one sample taken in one year; not helpful for trends. 
+  unite("sample", c(site, month, year, depth), sep = "_") %>% 
+  group_by(Hash, sample) %>% 
+  summarize(nReads = sum(nReads)) %>%  #already condensed down... length stays the same
+  spread(key = "sample", value = "nReads", fill = 0) %>% 
+  filter_at(vars(-Hash), any_vars(. != 0)) %>% ##drop hashes with no reads in any samples
+  gather(key = "sample", value = "nReads", -Hash)
+
+length(asv.swarm$nReads) #189126 - checks out!
+length(unique(asv.swarm$Hash)) #3002
+length(unique(asv.swarm$sample)) 
+length(unique(asv.multiHAB.samples$Hash)) # 5275
+length(unique(asv.multiHAB.samples$sample)) # 101
+```
+ 
+```{r DATA_TAX_COUNT, echo = F, message = F, warning = F, include = F}
+
+# ADD TAXONOMIC INFORMATION and create lists of all taxa and just HABs
+all.tax <- read.csv("../data/Copy_of_hash.annotated.csv") %>%
+        mutate(genus = gsub("-", "", genus)) %>% 
+        unite(col = "Taxon", "family", "genus", "species", sep = ",") %>%
+        select(Hash, Taxon) %>%
+        filter(Taxon!="NA,NA,NA")
+
+#ALL TAXA by ASV
+asv.count.all <- asv.swarm %>% 
+  left_join(all.tax) %>% 
+  separate("Taxon", ",", into = c("Family", "Genus", "Species"), remove = T) %>% 
+  filter(Genus != "NA") %>% 
+  group_by(Hash, Genus, sample) %>% 
+  summarize(nReads = sum(nReads)) %>%  # didn't lose any rows, good. at 60902 rows
+  unite("Taxon", Genus, Hash) %>% #44844
+  mutate(Taxon = substr(Taxon, 1, regexpr("\\_", Taxon)+3)) 
+
+#unique(asv.count.all$Taxon) 605 taxa
+
+genus.count.all <- asv.swarm %>% 
+  left_join(all.tax) %>% 
+  separate("Taxon", ",", into = c("Family", "Genus", "Species"), remove = T) %>% 
+  filter(Genus != "NA")
+
+#unique(genus.count.all$Genus) 262 genera
+  
+
+#JUST HABs by ASV
+#read in combined habs csv      
+UNESCO.Horner.HAB.list <- read.csv("../data/HABs_taxlist_UNESCO_Horner_20190718.csv") %>% 
+  as.data.frame %>%
+  filter(Genus != "NA") %>% 
+  distinct(Genus) %>% 
+  pull(Genus)
+
+asv.count.HAB <- asv.swarm %>%
+  left_join(all.tax) %>% 
+  separate("Taxon", ",", into = c("Family", "Genus", "Species"), remove = T) %>% 
+  filter(Genus != "NA") %>% 
+  filter(Genus %in% UNESCO.Horner.HAB.list) %>% 
+  group_by(Hash, Genus, sample) %>% 
+  summarize(nReads = sum(nReads)) %>% 
+  unite("Taxon", Genus, Hash) %>% 
+  mutate(Taxon = substr(Taxon, 1, regexpr("\\_", Taxon)+3)) 
+
+#and make list of HAB asvs:
+HAB.asv.list <- unique(asv.count.HAB$Taxon) #54 asvs
+```
+
+```{r DATA_TAX_EDNA, echo = F, message = F, warning = F, include = F}
+#ALL TAXA BY EDNA INDEX
+asv.edna.all <- asv.count.all %>% 
+  spread(key = sample, value = nReads) %>%  # nrows = 823, checks out with above. 
+  column_to_rownames("Taxon") %>% 
+  PROP() %>% 
+  INDEX() %>% 
+  replace(is.na(.), "") %>% 
+  rownames_to_column("Taxon") %>% 
+  gather(key = sample, value = edna, -Taxon)
+
+#create key EDNA INDEX files with taxa present in at least 10% of dataset for modelling.
+asv.edna.all10 <-asv.edna.all %>% 
+  mutate(x = ifelse(edna > 0 , 1, 0)) %>%
+             group_by(Taxon) %>%
+             mutate(tenpercent = ifelse(sum(x) > 6 & sum(x) < 58, "y", "n")) %>%
+             filter(tenpercent == "y") %>%
+             select(-tenpercent) %>% 
+             select(-x) %>% 
+             arrange(Taxon)
+
+#Now pull out just the HAB taxa, using lists made above, without recalculating eDNA!
+#by ASV:
+asv.edna.HAB <- asv.edna.all %>% 
+  filter(Taxon %in% HAB.asv.list) 
+
+#Create Table with COI sequences and Taxon codes for supplement:
+seq.tax.HAB.all <- hash.multiHAB %>% 
+  left_join(all.tax) %>% 
+  separate("Taxon", ",", into = c("Family", "Genus", "Species"), remove = T) %>% 
+  filter(Genus != "NA") %>% 
+  filter(Genus %in% UNESCO.Horner.HAB.list) %>%
+  unite("Taxon", Genus, Hash) %>% 
+  mutate(Taxon = substr(Taxon, 1, regexpr("\\_", Taxon)+3)) %>% 
+  select(Taxon, Sequence) %>% 
+  arrange(Taxon)
+
+write.csv(seq.tax.HAB.all, "../Submission_FrontiersEcolEvol_2020/Supplement/TableS2_HABseqs.csv")
+
+```
+
+```{r DATA_ENVIRO, echo = F, message = F, warning = F, include = F}
+# READ IN ENVIRO DATA
+###get enviro information in order with matching sample info. 
+#WOAC
+enviro.woac <- read.csv("../data/Copy_of_WOAC_enviro.csv", row.names = 1) %>% 
+  separate(Sample, c("date", "site", "depth")) %>% 
+  mutate(date = str_replace(date,"Apr", "04_")) %>% 
+  mutate(date = str_replace(date,"Sep", "09_")) %>% 
+  separate(date, c("month", "year")) %>% 
+  unite("sample", c(site, month, year, depth), sep = "_") %>% 
+  dplyr::rename(Temperature = T090C,
+                      Salinity = Sal00,
+                      pH = Ph) %>% 
+  select(sample, Temperature, Salinity, pH)
+
+#MONCHO
+enviro.moncho <- read.csv("../data/Copy_of_Site_Date_env_data.csv") %>% 
+  dplyr::rename("site" = Site) %>% 
+  dplyr::rename("date" = Date) %>% 
+  mutate(date = substr(date, 1, 6),
+         year = as.numeric(substr(date, 3, 4)),
+         month = as.numeric(substr(date, 5, 6))) %>% 
+  mutate("depth" = 0) %>% 
+  unite("sample", c(site, month, year, depth), sep = "_")
+      
+enviro.moncho$pH <- carb(flag = 15,
+                                      var1 = enviro.moncho$mean.TA,
+                                      var2 = enviro.moncho$mean.DIC,
+                                      S = enviro.moncho$Salinity,
+                                      T = enviro.moncho$Temperature)$pH      
+      
+enviro.moncho <- enviro.moncho %>% 
+  select(sample, Temperature, Salinity, pH) %>% 
+  arrange(sample)
+
+#combine WOAC and MONCHO
+enviro.all <- rbind(as.data.frame(enviro.moncho), as.data.frame(enviro.woac)) %>% 
+  separate(sample, c("site", "month", "year", "depth")) %>% 
+  filter(site %in% c("P8", "P11", "P12", "P14","P402", "TW", "PO", "LL", "TR", "SA")) %>% 
+  #filter(depth %in% c("0", "5")) %>% 
+  filter(depth == "0") %>% 
+  filter(month != "903") %>% 
+  mutate(Season = abs(as.numeric(month) - 7)) %>% 
+  unite("sample", c(site, month, year, depth), sep = "_") %>% 
+  group_by(sample) %>% 
+  summarise_at(c("Temperature", "Salinity", "pH", "Season"), mean) %>% 
+  arrange(sample)
+
+```
+
+```{r DATA_MERGE, echo = F, message = F, warning = F, include = F}
+#MERGE ENVIRO AND SEQ DATA
+
+# first for ALL taxa, counts 
+asv.count.all.enviro <- asv.count.all %>% 
+  left_join(enviro.all) 
+
+# and indices
+asv.edna.all.enviro <- asv.edna.all %>%
+  left_join(enviro.all)  #44844 rows from 44844 in asv.edna.all
+
+# next for HAB taxa, counts
+asv.count.HAB.enviro <- asv.count.HAB %>% 
+  left_join(enviro.all) 
+
+# and indices
+asv.edna.HAB.enviro <- asv.edna.HAB %>%
+  left_join(enviro.all)
+
+```
+
+```{r DATA_10PERCENT, echo = F, message = F, warning = F, include = F}
+asv.count.HAB10.enviro <- asv.count.HAB.enviro %>%
+             mutate(x = ifelse(nReads > 0 , 1, 0)) %>%
+             group_by(Taxon) %>%
+             mutate(tenpercent = ifelse(sum(x) > 6 & sum(x) < 58, "y", "n")) %>%
+             filter(tenpercent == "y") %>%
+             select(-tenpercent) %>%
+             select(-Season) %>%
+             arrange(Taxon)
+HAB10.asv.list <- unique(asv.count.HAB10.enviro$Taxon) #37
+
+asv.edna.HAB10.enviro <- asv.edna.HAB.enviro %>%
+  mutate(x = ifelse(edna > 0 , 1, 0)) %>%
+  group_by(Taxon) %>%
+  mutate(tenpercent = ifelse(sum(x) > 6 & sum(x) < 58, "y", "n")) %>%
+  filter(tenpercent == "y") %>%
+  select(-tenpercent) %>% 
+  select(-Season) %>% 
+  arrange(Taxon)
+
+focalTaxa <- c("Alexandrium_2b2", "Alexandrium_3fc", "Hematodinium_449", "Karlodinium_8ed","Karlodinium_a27", "Pseudonitzschia_4e5", "Pseudonitzschia_d36", "Pseudonitzschia_d40") 
+```
+
+# Abstract
+Harmful algae can have profound economic, environmental, and social consequences. As the timing, frequency, and severity of harmful algal blooms (HABs) change alongside global climate, efficient tools to monitor and understand the current ecological context of these taxa are increasingly important. Here we employ environmental DNA metabarcoding to identify patterns in a wide variety of harmful algae and associated ecological communities in the Hood Canal of Puget Sound in Washington State, USA. We track trends of presence and abundance in a series of water samples across nearly two years. We find putative harmful algal sequences in a majority of samples, suggesting that these groups are routinely present in local waters. We report patterns in variants of the economically important genus *Pseudo-nitzschia* (family Bacillariaceae), as well as multiple harmful algal taxa previously unknown or poorly documented in the region, including a cold-water variant from the saxitoxin-producing genus *Alexandrium* (family Gonyaulacaceae), two variants from the karlotoxin-producing genus *Karlodinium* (family Kareniaceae), and one variant from the parasitic genus *Hematodinium* (family Syndiniaceae). We then use data on environmental variables and the biological community surrounding each algal taxon to illustrate the ecological context in which these species are commonly found. Environmental DNA metabarcoding thus simultaneously (1) alerts us to potential new or cryptic occurrences of harmful algae, (2) expands our knowledge of the co-occurring conditions and species associated with the growth of these organisms in changing marine environments, and (3) provides a tool for monitoring and management moving forward.
+
+# Introduction
+
+Harmful algae and associated blooms create environmental, health, and economic challenges at a global scale, causing mass die-offs in ecosystems from de-oxygenation [@gobler2020climate; @griffith2020harmful], multiple types of poisoning in humans [@trainer2013diarrhetic], and significant losses of revenue for the aquaculture industry [@diaz2019impacts; @trainer2014proceedings]. For these reasons, local, national, and international governing bodies organize and fund monitoring programs to track HABs and identify the conditions that lead to their occurrence [@UNESCO; @Graneli2002; @lopez2008scientific; @trainer2002harmful]. In addition, changing marine environments appear to be causing increases in the duration, frequency, and severity of HABs globally in association with rising temperatures and declining pH [@gattuso2015contrasting; @gobler2017ocean]. 
+
+Hood Canal, a natural glacial fjord within the Puget Sound of Washington, USA, is a useful natural system in which to study the ecology of harmful algae and likely future changes to their patterns of occurrence. Surface temperatures of the region have risen 1.0°C since the 1950s, dissolved oxygen levels are below 5 mg/L in deeper sections of the sound, and pH has dropped by 0.05 - 0.15 units since pre-industrial era (~1750) [@busch2013potential; @feely2010; @mauger2015state]. Warmer temperatures and longer durations of warm conditions will create larger windows of growth for some HABs moving forward [@mauger2015state; @moore2011past], with ocean acidification exacerbating the impacts of these blooms by further increasing the toxicity and growth of harmful algal species [@field2014summary; @fu2012global].
+
+Harmful algae fall into four primary categories: diatoms, dinoflagellates, haptophytes, and raphidophytes. Of particular concern locally are diatoms from the genus *Pseudo-nitzschia* and dinoflagellates from the genera *Alexandrium*, *Gonyaulax*, and *Protoceratium*, each of which produces toxins that can accumulate in shellfish grazers [@trainer2016soundtoxins; @Cembella2000; @Satake1998; @Shimizu1975; @Trainer2009]. When consumed by humans, the toxins then cause symptoms ranging from amnesia to paralysis, and can be deadly [@ferrante2013harmful; @grattan2016harmful]. Additional harmful alga of concern are fish-killing species such as the diatom *Chaetoceros concavicornis* and the raphidophyte *Heterosigma akashiwo* [@yang1994harmful; @khan1997neurotoxins]. There is no current ensemble testing protocol for all of these local problematic algae, and both human-mediated transport and warming-related range shifts are likely to introduce additional taxa. For example, there is recent evidence that the toxic dinoflagellate *Karenia mikimotoi* (family Kareniaceae; described from Japan and also occurring in the North Atlantic) is now present along the west coast of North America, specifically off of Alaska and California [@workingwithstate2014]. 
+
+Because the effects of harmful algae are wide-ranging and potentially devastating [@lewitus2012harmful; @moore2019index], monitoring these organisms and the environmental conditions with which they are associated has long been a public health priority in Puget Sound and in many locations around the world. Efforts to track blooms of harmful algae have historically relied on the work of skilled taxonomists using microscopic visual analysis of cells to identify species [e.g. @lapworth2001; @yang2000karenia]. More recently, satellite spectrographic data [@ahn2006satellite; @tomlinson2004], molecular assays for toxins [@murray2011sxta; @pierce2001innovative], and flow cytometry coupled with machine learning [@campbell2010first] have been employed to detect and track HABs.
+
+Adding to the list of technological advances for monitoring are two types of genetic techniques that rely on environmental DNA (eDNA) present in the water to classify and assess the abundance of harmful algae: quantitative Polymerase Chain Reaction (qPCR) and DNA metabarcoding [@al2010detection; @antonella2013quantitative; @erdner2010quantitative; @grzebyk2017insights; @ruvindy2018qpcr]. The former method tracks known taxa individually and requires substantial sequence data to design species-specific primers and/or probes; the latter method involves PCR with less-specific primers to generate amplicons from a broad swath of taxa at a common locus. This second method, metabarcoding, allows detection and even quantification of many taxa simultaneously. 
+
+Because the specific target organisms need not be chosen *a priori*, metabarcoding may uncover taxa unexpected in the study region, and in addition, can reveal a cross-section of the biological community surrounding any particular group of interest [@deiner2017environmental; @taberlet2018environmental]. Previous work has described the ecological context of harmful algae and their blooms using environmental covariates [e.g. @wells2015harmful; @banerji2019evaluating], as well as assessments of bloom-associated taxa (typically other microorganisms or viruses) [e.g. @loureiro2011harmful; @buskey2008does], although the labor required for traditional survey methodology has limited the breadth of contextual taxa included in these studies. 
+
+Here, we couple environmental monitoring with eDNA metabarcoding to track the presence of dozens of potential harmful algal taxa simultaneously, including a number unexpected or understudied in the region of interest. Because of their economic and public-health importance, we focus on variants in the genera *Alexandrium* (dinoflagellate family Gonyaulacaceae), *Hematodinium* (dinoflagellate family Syndiniaceae), *Karlodinium* (dinoflagellate family Kareniaceae), and *Pseudo-nitzschia* (diatom family Bacillariaceae), and examine the distribution of these in time and space across 19 months of sampling at ten locations in Hood Canal. We model the associations of individual algal lineages with key environmental variables, and subsequently improve the predictive value of these models by including co-occurring (non-algal) taxa as possible indicator species. With these analyses, we present useful information on the distributions and ecological contexts of potentially harmful algae in the Puget Sound region, and demonstrate how eDNA metabarcoding can improve our understanding and management of harmful algae, both locally and globally.     
+
+# Materials and Methods
+
+## Environmental DNA Sampling and Measuring Environmental Variables
+
+To identify a broad range of potential harmful algal taxa and simultaneously survey the surrounding biological community, we sampled seawater for eDNA from ten sites within Hood Canal, a natural glacial fjord in Puget Sound, Washington, USA. Five sampling sites were intertidal, and five were nearby nearshore locations at the approximate center of the fjord. For intertidal locations at Salisbury Point County Park (SA), Triton Cove State Park (TR), Lilliwaup Tidelands State Park (LL), Potlatch State Park (PO), and Twanoh State Park (TW) (see Figure 1 and Table S1 for location coordinates), we collected three 1 L samples of water from immediately below the surface using a bleach-cleaned plastic bottle held at the end of a 1.7 meter pole. We sampled intertidal locations every 1-2 months between March 2017 and July 2018 (see Table S1 for sampling dates). At these same stations and simultaneous with eDNA sampling, we collected one 120 ml water sample from each site and poisoned it with 0.1 ml of saturated HgCl${_2}$ for carbonate chemistry analysis including pH [@dickson2007guide]. We also collected in situ measurements of temperature and salinity using a handheld multiprobe (Hanna Instruments, USA) and a portable refractometer. We characterized sample carbonate chemistry by measuring Total Alkalinity (TA; open-cell automated titration based on a Dosimat plus (Metrohm AG) as part of a custom system assembled by Andrew Dickson (University of California San Diego) and used in the laboratory of Alex Gagnon at the University of Washington) and Dissolved Inorganic Carbon (DIC; Apollo Instruments, USA; CO2 extraction system with 10% (v/v) phosphoric acid). Both measurements were calibrated and validated with certified reference material from the Scripps Oceanographic Institute. Using DIC and TA, we calculated pH and the remaining carbonate system parameters with the R package ‘seacarb‘ [@gattuso2015seacarb], removing a single outlier sample from the dataset used for environmental modeling (see below) due to an unreasonably low pH value (<7.5).
+
+For nearshore locations, we sampled a selection of stations (P8, P14, P12, P11, P402) surveyed by the Washington Ocean Acidification Center during triannual cruises (see Figure 1 and Table S1 for location coordinates). The samples used here were collected in September 2017 (2 samples), April 2018 (3 samples), and September 2018 (3 samples); see Table S1 for sampling dates. At each station, a CTD was deployed with twelve Niskin bottles, and collected data on temperature, salinity, and pH [@NOAA201709; @NOAA201804; @NOAA201809] in addition to water for eDNA from immediately below the surface. We filtered 500 mL of each water sample for eDNA from both intertidal and nearshore locations with a cellulose acetate filter (47 mm diameter, 0.45 $\mu$m pore size), and preserved this filter in Longmire buffer until DNA extraction [@renshaw2015room]. Many unmeasured variables influence planktonic communities (e.g., nutrients, sunlight, and wave energy); nevertheless the minimal set of parameters we analyzed here clearly distinguished communities and was adequate for the purposes of assessing temporal and spatial trends. Our purpose was to describe patterns of harmful algae over space and time, along with the environmental and ecological contexts in which they occurred, rather than to test any particular mechanism by which harmful algal taxa might respond to different environmental parameters.
+
+```{r FIG1_SITEMAP, fig.cap="\\label{fig:sitemap} Figure 1: Intertidal and nearshore sampling locations in Hood Canal, Washington, USA. Site abbreviations are described in the text, and coordinates are given in Table S1. Inset map shows the Pacific coast of the continental United States.", fig.path='../figures/', echo=F, message=F, warning=F, include = T, fig.height=4, dpi = 300}
+
+knitr::include_graphics("../figures/SiteMap_small.png", auto_pdf = TRUE)
+```
+
+## Extraction, Amplification, and Sequencing
+
+To extract DNA from sample filters, we used a phenol:chloroform:isoamyl alcohol protocol [modified from @renshaw2015room]. To maximize extraction efficiency and minimize co-extraction of inhibitors, we incubated filter membranes at 56$^\circ$C for 30 min before adding 900 $\mu$L of phenol:chloroform:isoamyl alcohol and shaking vigorously for 60 s. We conducted two consecutive chloroform washes by centrifuging at 14,000 rpm for 5 min, transferring the aqueous layer to 700 $\mu$L chloroform, and shaking vigorously for 60 s. After a third centrifugation, we transferred 500 $\mu$L of the aqueous layer to tubes containing 20 $\mu$L 5 molar NaCl and 500 $\mu$L 100% isopropanol, and froze these at −20$^\circ$C for approximately 15 h. Finally, we centrifuged samples at 14,000 rpm for 10 min, poured off or pipetted out any remaining liquid, and dried in a vacuum centrifuge at 45$^\circ$C for 15 min. We resuspended the eluate in 200 $\mu$L water, and used 1 $\mu$L of diluted DNA extract (between 1:10 and 1:400) as template for PCR.
+
+To identify a wide variety of metazoan taxa including putative harmful algae and their surrounding biological communities from eDNA, we amplified a ~315 base pair segment of the Cytochrome Oxidase I (COI) using universal primers described in @leray2013new. To distinguish technical from biological variance and to quantify each, we ran and sequenced in triplicate PCR reactions from each of the samples (i.e., individual bottles of water). For multiplex sequencing on an Illumina MiSeq, we followed a two-step PCR protocol [@o2016indexed] with redundant 3' and 5' indexing. In the first step, we used a PCR reaction containing 1X HotStar Buffer, 2.5 mM MgCl2, 0.5 mM dNTP, 0.3 $\mu$M of each primer, and 0.5 units of HotStar Taq (Qiagen Corp., Valencia, CA, USA) per 20 $\mu$L reaction. The PCR protocol for this step consisted of 40 cycles, including an annealing touchdown from 62$^\circ$C to 46$^\circ$C (-1$^\circ$C per cycle), followed by 25 cycles at 46$^\circ$C. In the second step, we added identical 6 base-pair nucleotide tags to both ends of our amplicons, with unique index sequences for each individual PCR reaction. We allowed for no sequencing error in these tags; only sequences with identical tags on both the forward and reverse read-directions survived quality control. This gave us high confidence in assigning amplicons back to individual field samples. 
+
+We generated amplicons with the same replication scheme for positive control kangaroo (genus *Macropus*) tissue, selected because this genus is absent from the sampling sites and common molecular biology reagents, but amplifies well with the universal primer set used in this study. We could therefore use positive control samples to identify possible cross-contamination: reads from other taxa that appear in these samples allow us to estimate and account for the proportion of sequences that are present in the incorrect PCR reaction (see Bioinformatics below). We also amplified negative controls (molecular grade water) in triplicate alongside environmental samples and positive controls, and verified by gel electrophoresis and fluorometry that these PCR reactions contained no appreciable amount of DNA [see @kelly2018effect for a discussion of the merits of sequencing positive and not negative controls]. 
+
+To prepare libraries of replicated, indexed samples and positive controls, we followed manufacturers’ protocols (KAPA Biosystems, Wilmington, MA, USA; NEXTflex DNA barcodes; BIOO Scientific, Austin, TX, USA). We then performed sequencing on an Illumina MiSeq (250-300 bp, paired-end) platform in seven different sets of samples: six for the intertidal dataset and one for the nearshore dataset. 
+
+## Bioinformatics
+
+We followed updated versions of previously published procedures for bioinformatics, quality control, and decontamination [@kelly2018effect]. This protocol uses a custom Unix-based script [@monchoscript] calling third-party programs to perform initial quality control on sequence reads from all four runs combined, demultiplexing sequences to their sample of origin and clustering unique variants into amplicon sequence variants (ASVs) [@martin2011cutadapt; @callahan2016dada2]. 
+
+Specifically, to address possible cross-sample contamination [see @schnell2015tag], we subtracted the maximum proportional representation of each ASV across all positive control samples (see Extraction, Amplification, and Sequencing above) from the respective ASV in field samples. We estimated the probability of ASV occurrence by performing occupancy modeling [@royle2006generalized; @lahoz2016statistical]. Following Lahoz-Monfort et al. (2016) and using the full Bayesian code for package rjags [@plummer2016package] provided by those authors, we modeled the probability of occupancy (i.e., true presence) for each of the unique sequence variants in our dataset. We treated replicate PCR reactions of each water bottle as independent trials, estimating the true-positive rate of detection ($P_{11}$), false-positive rate ($P_{10}$), and commonness (psi, $\psi$) in a binomial model. We then used these parameters to estimate the overall likelihood of occupancy (true presence) for each ASV; those with low likelihoods (<80\%) were deemed unlikely to be truly present in the dataset, and therefore culled. We removed samples whose PCR replicates were highly dissimilar by calculating the Bray-Curtis dissimilarity amongst PCR replicates from the same bottle of water and discarding those with distance to the sample centroid outside a 95% confidence interval. The result was a dataset of $3.98 * 10^{8}$ reads from `r length(unique(asv.multiHAB.samples$Hash))` unique ASVs. Lastly, to collapse variants likely due to PCR error, we converted ASVs to operational taxonomic units (OTUs) by clustering with SWARM [@mahe2015swarm]. All bioinformatic and analytical code is included in a GitHub repository (https://github.com/ramongallego/Harmful.Algae.eDNA), including the details of parameter settings in the bioinformatics pipelines used. Sequence and annotation information are included as well, and the former are deposited and publicly available in GenBank (upon acceptance; accession numbers will be provided in the published manuscript).
+
+## Taxonomy
+
+We performed the taxonomic identification using a CRUX-generated database for the Leray fragment of the COI gene (see Extraction, Amplification, and Sequencing above), querying that database with a Bowtie2 algorithm [as described in @curd2019anacapa]. The algorithm classifies the query sequence to the last common ancestor of ambiguously classified sequences. Only matches with a bootstrap support greater than 90% were kept. Here, we assigned taxonomy at the level of genus, rather than species, for two main reasons. First, for some taxa, variation may not be sufficient to distinguish species within a genus, and second, representation of local species in the databases used may not be complete, leading to the mis-assignment of sequences to their nearest represented neighbor. We denoted different lineages within genera using three-character abbreviation derived from the sequence variants themselves. Full sequences for each variant are provided in Table S2. To assess similarity of putative harmful algal lineages, we translated nucleotide sequences with the ExPASy Bioinformatics Resource Portal Translate tool using the mold, protozoan, and coelenterate mitochondrial, mycoplasma/spiroplasma genetic code [@gasteiger2003expasy]. We created both nucleotide and amino acid alignments with the Clustal Omega Multiple Sequence Alignment tool [@sievers2014clustal].
+
+## Species Distributions in Space and Time
+
+To examine the distribution of potential harmful algal taxa in time and space, we calculated an index of relative eDNA abundance (hereafter eDNA abundance index). To derive this index, we first normalized taxon-specific ASV counts into proportions within a technical replicate, and then transformed the proportion values such that the maximum across all samples was scaled to 1 for each taxon [@kelly2019understanding]. Such indexing allowed us to track trends in abundance of taxa in time and space by correcting for both differences in read depth among samples and differences in amplification efficiency among sequences. We plotted the eDNA abundance index for each potential harmful algal taxon across all sampling events from both intertidal and nearshore eDNA collections in our time series between March 2017 and September 2018. 
+
+## Environmental and Biological Context
+
+To explore the ways in which environmental variables were associated with the presence or absence of our focal harmful algal taxa, we compared logistic-regression models using taxon presence as outcome, and combinations of three environmental variables (temperature, pH, and salinity) as predictors. We also fit a variety of models in a Bayesian hierarchical framework, where the slopes of predictors and intercepts could vary by season (summer/winter), and included all models (hierarchical and non-hierarchical) in our model comparison. Rather than mechanically testing all possible combinations of models, we proposed models that were reasonable given the observed patterns of occurrences; in total, this resulted in between five and 17 models per taxon. For purposes of the models, we designated April through September as being "summer", and other months "winter". Given many possible predictor variables, developing a useful model without overfitting can be a challenge. To combat this, we compared models using the widely applicable information criterion (WAIC) [@watanabe2010asymptotic], which makes no assumptions about the shape of the posterior probability distribution and -- like information criteria in general -- penalizes more complex models. Moreover, WAIC quickly approximates the results of leave-one-out cross-validation [@mcelreath2020statistical] to estimate out-of-sample model performance. Following model selection using WAIC, we reported the in-sample model accuracy for reference. 
+
+To determine the species most closely associated with potential harmful algal taxa, we performed canonical analysis of principal coordinates (CAP) for each focal variant by implementing the capscale function in vegan [@oksanen2013package], which revealed the degree to which other taxa in the surrounding biological communities could be associated with presence (versus absence) of the potential harmful algal taxon. Using this ordination technique avoids the problem of testing each co-occurring taxon for significant associations with our focal putative harmful algae, thereby removing the need to statistically correct for multiple comparisons. We then used these putative indicator taxa as predictors in a second round of logistic regressions, adding only the single most-strongly associated taxon as a separate intercept term to the best-fit environmental models for each of our focal lineages (above). Such contextual ecological information is useful to the extent that it helps to predict the occurrence of harmful algal lineages without overfitting, which we evaluated as described above using WAIC. 
+
+# Results
+
+## Taxonomy
+
+Environmental DNA metabarcoding of 63 samples from five intertidal and five nearshore locations in Hood Canal, Washington, United States revealed a total of 605 unique amplicon sequence variants (ASVs) for which we were able to assign taxonomy to 262 distinct genera. Of these, exactly 100 ASVs were assigned to genera that are known to contain harmful algae [@UNESCO; @trainer2016soundtoxins; @horner1993toxic; @horner1997harmful]. These potential harmful algal taxa are members of four main taxonomic groups -- diatoms, dinoflagellates, haptophytes, and raphidophytes -- and represent seventeen genera (diatoms: *Chaetoceros*, *Nitzschia*, *Pseudo-nitzschia*; dinoflagellates: *Alexandrium*, *Dinophysis*, *Gonyaulax*, *Gymnodinium (Akashiwo)*, *Hematodinium*, *Heterocapsa*,  *Karlodinium*, *Prorocentrum*, *Woloszynskia*; haptophytes: *Chrysocromulina*, *Phaeocystis*; raphidophytes: *Chattonella*, *Heterosigma*, *Pseudochattonella*; See Table S2 for a complete list of potential harmful algal taxonomic assignments and COI sequences).
+
+Taxa that occur only in small numbers of samples lack sufficient observations to allow robust tests for association with environmental variables. Consequently, we focus hereafter on the ASVs present in at least ten percent of samples (minimum 7 occurrences out of 63 samples), an adequate sample size to compare with environmental variables and biological context. This subset of sequences included 191 total variants, 37 of which belong to potentially harmful algal taxa (Table 1), and the rest to other members of the biological community. These putative harmful algal variants belong to 12 genera containing differing degrees of sequence variation, with some such as *Hematodinium* represented by a single DNA and protein sequence, and others such as *Nitzschia* represented by a much larger number of DNA (10) and amino acid (5) variants. Each of the potential harmful algal genera represented here exhibit varying degrees and types of toxicity or harm, ranging from physical irritation of fish gill tissue to production of toxins dangerous to human health [Table 1; @trainer2016soundtoxins; @kotaki2006new; @stentiford2005review; @cho2017haemolytic; @lindberg2005studies; @place2012karlodinium; @simonsen1997toxicity; @peperzak2008mass; @skjelbred2011toxicity]. 
+
+\smallsize
+```{r TABLE1_HAB, echo=F, message=FALSE, warning=FALSE, include = T}
+
+Table1 <- read.csv("../data/20200220_Table1.csv")
+colnames(Table1)<-c("Type", "Genus", "DNA variants", "Protein variants", "Toxicity (target)", "Sampling Location")
+
+pander(Table1, split.table = Inf, caption = "Table 1: Potential harmful algal taxa identified by eDNA in at least ten percent of samples from in Hood Canal, WA. Type of harmful algae and genus are given, as well as the number of DNA and protein variants, toxicity, and sampling location(s) for member(s) of that genus.")
+
+```
+\normalsize 
+
+Amplicon sequences from environmental samples cannot be matched directly with phenotypes, by definition, and taxonomic annotations of those sequences depend upon adequate reference material. Acknowledging both the intra-specific variation that exists at the COI locus and the incompleteness of the GenBank reference database for many of these groups, we treat polymorphism within a putative genus as being ambiguous: these variants may be intra-specific, or they may represent distinct evolutionary lineages. For these reasons, we conservatively perform analyses on the sequence variants themselves (denoted with their genus names and a three-character code that abbreviates the hash of the unique nucleotide sequence) rather than making assumptions regarding their status as haplotypes versus species.
+
+Putative harmful algal taxa from a few genera are of particular interest, due to the nature of their toxicity (*Alexandrium*), to their unexpected presence in the study region (*Hematodinium* and *Karlodinium*), or to their potential economic impact (*Pseudo-nitzschia*). For these reasons, we chose to examine aspects of their taxonomy, distribution, and ecology in greater detail. We first examined COI sequences for these taxa from our original metabarcoding effort, noting that both *Alexandrium* and *Karlodinium* genera were each represented by two sequence variants, *Pseudo-nitzschia* by three sequence variants, and *Hematodinium* by a single sequence variant (Table 1). Amino acid translation revealed that the two *Alexandrium* ASVs differed by a single amino acid substitution, the two *Karlodinium* ASVs differed by five substitutions, and although two of the three *Pseudo-nitzschia* sequences (Pseudonitzschia_4e5 and Pseudonitzschia_d36) were identical in amino acid sequence, they differed from the third (Pseudonitzschia_d40) by two substitutions. The results below focus on these eight sequence variants, which we hereafter refer to as our "focal lineages." 
+
+## Species Distributions in Space and Time
+
+To identify the seasonal and spatial distributions of taxa from our eight focal lineages, we next visualized their patterns of presence and absence in time and space (Figure 2). The variants assigned to *Alexandrium*, Alexandrium_3fc and Alexandrium_2b2, had completely non-overlapping distributions in space and time, never appearing in the same sampling event. Alexandrium_3fc appeared solely in the summer (April-September) months (25 of 43 summer samples vs. 0 of 20 winter samples; p $<$ 0.001) whereas Alexandrium_2b2 appeared primarily in the winter (October-March) months (1 of 43 summer samples vs. 7 of 20 winter samples; p $<$ 0.001). In contrast, the single variant assigned to *Hematodinium*, Hematodinium_449, was not significantly seasonal (9 of 43 summer samples and 3 of 20 in winter; $p = 0.742$); neither were the two variants assigned to *Karlodinium*, Karlodinium_8ed and Karlodinium_a27 (Karlodinium_8ed: 14 of 43 summer samples and 7 of 20 winter samples, $p = 1$; Karlodinium_a27: 6 of 43 summer samples and 5 of 20 winter samples, $p = 0.322$). One of the three variants assigned to *Pseudo-nitzschia* occurred significantly more frequently in summer than in winter months (Pseudonitzchia_d36: 10 of 43 summer samples and 0 of 20 winter samples, $p = 0.023$), while the others did not (Pseudonitzchia_4e5: 8 of 43 summer samples and 1 of 20 winter samples, $p = 0.244$; Pseudonitzchia_d40, 7 of 43 summer samples and 4 of 20 in winter; $p = 0.737$).  
+
+```{r FIG2_SPACETIME, echo=F, fig.cap="Figure 2: Spatial and temporal distribution of HAB taxa. Distribution of eight focal algal lineages across time and space. Larger and lighter circles indicate greater relative abundances; 'x' symbol indicates non-detection at that site/date. Site abbreviations are as in Figure 1 and Table S1", include=T, fig.path='../figures/', fig.width=7.8, message=FALSE, warning=FALSE, dpi = 300}
+
+
+#create objects of graphs for each of the focalTaxa
+for (i in focalTaxa){
+  assign(paste0(i, "_ednadist"),
+         EDNASPACETIME(i))
+}
+
+grid.arrange(Alexandrium_2b2_ednadist, Alexandrium_3fc_ednadist, Hematodinium_449_ednadist, Karlodinium_8ed_ednadist, Karlodinium_a27_ednadist, Pseudonitzschia_4e5_ednadist, Pseudonitzschia_d36_ednadist, Pseudonitzschia_d40_ednadist, 
+             nrow = 2)
+
+
+```
+
+```{r STATS_Spacetime, echo = FALSE, include = FALSE}
+
+#Alexandrium_3fc - season
+tmp <- asv.count.all.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer")) %>%
+  mutate(presence = ifelse(nReads > 0, 1, 0)) %>%
+  filter(Taxon %in% c("Alexandrium_3fc")) %>% 
+  ungroup() %>% 
+  group_by(Site, Month, Year) %>% 
+  summarise(nReads = sum(nReads),
+            Season = unique(Season),
+            Salinity = unique(Salinity)) %>% 
+  mutate(presence = ifelse(nReads > 0, 1, 0)) 
+
+xtabs( ~ presence + Season, data = tmp) %>% 
+  chisq.test(simulate.p.value = TRUE)
+
+#Alexandrium_2b2 - season
+tmp <- asv.count.all.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer")) %>%
+  mutate(presence = ifelse(nReads > 0, 1, 0)) %>%
+  filter(Taxon %in% c("Alexandrium_2b2")) %>% 
+  ungroup() %>% 
+  group_by(Site, Month, Year) %>% 
+  summarise(nReads = sum(nReads),
+            Season = unique(Season),
+            Salinity = unique(Salinity)) %>% 
+  mutate(presence = ifelse(nReads > 0, 1, 0)) 
+
+xtabs( ~ presence + Season, data = tmp) %>% 
+  chisq.test(simulate.p.value = TRUE)
+
+#Hematodinium_449 - season
+tmp <- asv.count.all.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer")) %>%
+  mutate(presence = ifelse(nReads > 0, 1, 0)) %>%
+  filter(Taxon %in% c("Hematodinium_449")) %>% 
+  ungroup() %>% 
+  group_by(Site, Month, Year) %>% 
+  summarise(nReads = sum(nReads),
+            Season = unique(Season),
+            Salinity = unique(Salinity)) %>% 
+  mutate(presence = ifelse(nReads > 0, 1, 0)) 
+
+xtabs( ~ presence + Season, data = tmp) %>% 
+  chisq.test(simulate.p.value = TRUE)
+
+#Karlodinium_8ed - season
+tmp <- asv.count.all.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer")) %>%
+  mutate(presence = ifelse(nReads > 0, 1, 0)) %>%
+  filter(Taxon %in% c("Karlodinium_8ed")) %>% 
+  ungroup() %>% 
+  group_by(Site, Month, Year) %>% 
+  summarise(nReads = sum(nReads),
+            Season = unique(Season),
+            Salinity = unique(Salinity)) %>% 
+  mutate(presence = ifelse(nReads > 0, 1, 0)) 
+
+xtabs( ~ presence + Season, data = tmp) %>% 
+  chisq.test(simulate.p.value = TRUE)
+
+#Karlodinium_a27 - season
+tmp <- asv.count.all.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer")) %>%
+  mutate(presence = ifelse(nReads > 0, 1, 0)) %>%
+  filter(Taxon %in% c("Karlodinium_a27")) %>% 
+  ungroup() %>% 
+  group_by(Site, Month, Year) %>% 
+  summarise(nReads = sum(nReads),
+            Season = unique(Season),
+            Salinity = unique(Salinity)) %>% 
+  mutate(presence = ifelse(nReads > 0, 1, 0)) 
+
+xtabs( ~ presence + Season, data = tmp) %>% 
+  chisq.test(simulate.p.value = TRUE)
+
+#Pseudonitzchia_4e5 - season
+tmp <- asv.count.all.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer")) %>%
+  mutate(presence = ifelse(nReads > 0, 1, 0)) %>%
+  filter(Taxon %in% c("Pseudonitzschia_4e5")) %>% 
+  ungroup() %>% 
+  group_by(Site, Month, Year) %>% 
+  summarise(nReads = sum(nReads),
+            Season = unique(Season),
+            Salinity = unique(Salinity)) %>% 
+  mutate(presence = ifelse(nReads > 0, 1, 0)) 
+
+xtabs( ~ presence + Season, data = tmp) %>% 
+  chisq.test(simulate.p.value = TRUE)
+
+#Pseudonitzchia_d36 - season
+tmp <- asv.count.all.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer")) %>%
+  mutate(presence = ifelse(nReads > 0, 1, 0)) %>%
+  filter(Taxon %in% c("Pseudonitzschia_d36")) %>% 
+  ungroup() %>% 
+  group_by(Site, Month, Year) %>% 
+  summarise(nReads = sum(nReads),
+            Season = unique(Season),
+            Salinity = unique(Salinity)) %>% 
+  mutate(presence = ifelse(nReads > 0, 1, 0)) 
+
+xtabs( ~ presence + Season, data = tmp) %>% 
+  chisq.test(simulate.p.value = TRUE)
+
+#Pseudonitzschia_d40 - season
+tmp <- asv.count.all.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer")) %>%
+  mutate(presence = ifelse(nReads > 0, 1, 0)) %>%
+  filter(Taxon %in% c("Pseudonitzschia_d40")) %>% 
+  ungroup() %>% 
+  group_by(Site, Month, Year) %>% 
+  summarise(nReads = sum(nReads),
+            Season = unique(Season),
+            Salinity = unique(Salinity)) %>% 
+  mutate(presence = ifelse(nReads > 0, 1, 0)) 
+
+xtabs( ~ presence + Season, data = tmp) %>% 
+  chisq.test(simulate.p.value = TRUE)
+
+```
+
+```{r, echo = FALSE, include = FALSE}
+intertidal <- c("PO","TW","LL","TR","SA")
+nearshore <- c("P11",  "P12",  "P14",  "P402", "P8")
+totalintertidalSamples <- asv.count.HAB10.enviro %>% 
+  ungroup() %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>% 
+  filter(Site %in% intertidal) %>% 
+  select(Site, Month, Year) %>% 
+  unique() %>% 
+  nrow()
+totalnearshoreSamples <- asv.count.HAB10.enviro %>% 
+  ungroup() %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>% 
+  filter(Site %in% nearshore) %>% 
+  select(Site, Month, Year) %>% 
+  unique() %>% 
+  nrow()
+
+detections <- asv.count.HAB10.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>% 
+  mutate(intertidal = ifelse(Site %in% intertidal, 1, 0),
+         nearshore = ifelse(Site %in% nearshore, 1, 0)) %>% 
+  filter(Taxon %in% focalTaxa) %>% 
+  group_by(Taxon) %>% 
+  summarise(sum(intertidal[nReads > 0]),
+            sum(intertidal[nReads == 0]),
+            sum(nearshore[nReads > 0]),
+            sum(nearshore[nReads == 0]))
+
+detections$intertidalProb <- detections[,2]/totalintertidalSamples
+detections$nearshoreProb <- detections[,4]/totalnearshoreSamples
+
+
+temp <- asv.count.HAB10.enviro %>% 
+  filter(Taxon %in% focalTaxa) %>% 
+  group_by(sample) %>% 
+  summarize(totalReads = sum(nReads)) %>% 
+  pull(totalReads) 
+
+```
+
+All together, we detected at least one of the eight focal sequence variants in `r sum(temp>0)` out of `r length(temp)` sampling events (`r round(sum(temp>0)/length(temp), 2) * 100`%), indicating that these potential harmful algal taxa are present at some level more often than not in local waters. Additionally, the larger intertidal dataset was more diverse, containing all eight focal lineages, while only three were detected on the nearshore cruises (`r detections$Taxon[c(2,4,8)]`). 
+
+## Environmental Context
+
+The above results suggest both *Alexandrium* lineages and at least one of the three *Pseudo-nitzschia* lineages are associated with environmental conditions that change seasonally, while the others are more stochastic in space and time. For each focal taxon, we fit a series of logistic-regression models (see Methods) describing taxon occurrence as a function of sea-surface temperature, pH, and salinity, both with and without a global intercept term (see Table S3 for a complete list of models tested, by taxon). A subset of our models was also hierarchical, allowing slopes to vary according to season, and we used WAIC to identify the best-fit models of those tested (Table 2). 
+
+\small
+```{r Table of Best-Fit Models with error, echo = F, warning = F}
+
+#best fit models:
+
+for (i in focalTaxa){
+  assign(paste0(i, "_bestEnvirModel"),
+         readRDS(paste0("../BayesianLogisticModels_Environmental/",i,"_BestModel.RDS"))
+         )
+}
+
+
+EnvirModelTable <- data.frame(
+  Taxon = NA,
+  Model = NA
+)
+
+for (i in 1:length(focalTaxa)){
+  mod <- as.symbol(paste0(focalTaxa[i], "_bestEnvirModel")) %>% 
+    eval() 
+ EnvirModelTable[i,1] <- focalTaxa[i]
+ EnvirModelTable[i,2] <- as.character(mod$formula)[3]
+}
+
+EnvirModelTable[1, 2] <- "Intercept + pH + (1 + Temperature | Season)"
+EnvirModelTable[2, 2] <- "Intercept + (1 + Temperature | Season)"
+EnvirModelTable[3, 2] <- "pH + Temperature"
+EnvirModelTable[4, 2] <- "Intercept + (Intercept + Temperature | Season)"
+EnvirModelTable[5, 2] <- "pH + (Intercept + Salinity | Season)"
+EnvirModelTable[6, 2] <- "Salinity + Temperature + pH"
+EnvirModelTable[7, 2] <- "Intercept + Salinity + pH + (1 | Season) "
+EnvirModelTable[8, 2] <- "Salinity"
+
+
+#classification error
+
+EnvirSummaryChart <- data.frame(
+  Taxon = NA,
+  EnviroModel_Accuracy = NA,
+  EnviroModel_TruePositiveRate = NA,
+  EnviroModel_TrueNegativeRate = NA
+)
+
+for (i in 1:length(focalTaxa)){
+  EnvironmentalModel <- readRDS(paste0("../BayesianLogisticModels_EcolEnviroCombined/",focalTaxa[i],"_envir_model.RDS"))
+  tempdataset <- readRDS(paste0("../BayesianLogisticModels_EcolEnviroCombined/",focalTaxa[i],"_tempdataset.RDS"))
+  
+  #EnvirSummaryChart[i,1] <- focalTaxa[i]
+  EnvirSummaryChart[i, 2:4] <- PREDERROR(EnvironmentalModel, tempdataset, focalTaxa[i])
+    
+}
+
+EnvirSummaryChart <- EnvirSummaryChart %>% 
+  mutate_at(2:4, funs(round(., 2))) %>% 
+  select(-Taxon)
+
+#bind two tables:
+EnvirModels <- cbind(EnvirModelTable, EnvirSummaryChart)
+colnames(EnvirModels) <- c("Taxon", "Environmental Model", "Accuracy", "True Positive Rate", "True Negative Rate")
+
+pander(EnvirModels, split.table = Inf, caption = "Table 2: Best-fit models of environmental covariates for eight focal algal lineages.")
+```
+\normalsize
+
+All but one of these models involves multiple environmental parameters, making them difficult to adequately visualize in two dimensions. Nevertheless, plotting the probability of taxon presence as a function of the single most-influential environmental variable and capturing seasonal variation in slope when models are hierarchical illustrates the degree to which the models do (or do not) explain the observed variance in potential harmful algal taxa (Figure 3). Among the environmental variables measured, both putative harmful algal variants most closely-associated with pH occur more frequently in our samples at lower, more acidic values (Hematodinium_449, and Karlodinium_a27). For those that are most closely-associated with temperature, warmer waters see higher frequencies of a majority of putative harmful algae during the season in which they primarily occur (Alexandrium_2b2 in winter, Alexandrium_3fc in summer) with the notable exception of Karlodinium_8ed, which occurs frequently year-round and shows a conflicting relationship with temperature across seasons. 
+
+Although environmental covariates sea-surface temperature, pH, and salinity are associated with the presence or absence of our eight focal lineages, accuracy of these models varies widely, from 0.69 for Alexandrium_3fc to 0.92 for Alexandrium_2b2 (Table 3). Additionally,  these covariates alone can predict only a minority of occurrences for all taxa (Table 3, true positive rate). Consequently, we use eDNA metabarcoding data from the communities surrounding our focal lineages for potentially helpful information about the ecology of these putative harmful algae.
+
+```{r Fig3_ENVIROMODs, echo=F, message = F, warning = F, fig.width=7.8, fig.height=6, fig.cap = "Figure 3: Best-fit logistic models for eight focal algal lineages. Here, probability of presence is shown as a function of the single most influential environmental variable in the model, along with overall model means (lines) and 50% and 95% credibility intervals (shaded areas). Where two-panel figures are shown for a taxon, the best-fit model included a slope term that varied by season.", dpi = 300}
+
+
+plottingDataset <- asv.count.HAB10.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer"),
+         Season = fct_relevel(Season, "Winter")) %>%
+  dplyr::rename("presence" = "x") %>%
+  filter(pH > 7.5) 
+
+Alexandrium_2b2_envirPlot <- plottingDataset %>%
+  filter(Taxon == "Alexandrium_2b2") %>% 
+  mutate(TempStd = (Temperature - mean(Temperature))/sd(Temperature),
+         pHStd = (pH - mean(pH))/sd(pH),
+         SalinityStd = (Salinity - mean(Salinity))/sd(Salinity)) %>% 
+  add_fitted_draws(Alexandrium_2b2_bestEnvirModel, n = 1000) %>% 
+  ggplot(aes(x = Temperature, y = presence)) +
+  geom_point() +
+  facet_grid(~ Season, scales = "free_x") +
+  stat_lineribbon(aes(y = .value), .width = c(.95, .5)) +
+  scale_fill_brewer() +
+  ggtitle("Alexandrium_2b2") +
+  theme(legend.position = "none")  +
+  theme(plot.title = element_text(size = 10))
+
+Alexandrium_3fc_envirPlot <- plottingDataset %>%
+  filter(Taxon == "Alexandrium_3fc") %>% 
+  mutate(TempStd = (Temperature - mean(Temperature))/sd(Temperature),
+         pHStd = (pH - mean(pH))/sd(pH),
+         SalinityStd = (Salinity - mean(Salinity))/sd(Salinity)) %>% 
+  add_fitted_draws(Alexandrium_3fc_bestEnvirModel, n = 1000) %>% 
+  ggplot(aes(x = Temperature, y = presence)) +
+  geom_point() +
+  facet_grid(~ Season, scales = "free_x") +
+  stat_lineribbon(aes(y = .value), .width = c(.95, .5)) +
+  scale_fill_brewer()  +
+  ggtitle("Alexandrium_3fc") +
+  theme(legend.position = "none")  +
+  theme(plot.title = element_text(size = 10))
+
+Hematodinium_449_envirPlot <- plottingDataset %>%
+  filter(Taxon == "Hematodinium_449") %>% 
+  mutate(TempStd = (Temperature - mean(Temperature))/sd(Temperature),
+         pHStd = (pH - mean(pH))/sd(pH),
+         SalinityStd = (Salinity - mean(Salinity))/sd(Salinity)) %>% 
+  add_fitted_draws(Hematodinium_449_bestEnvirModel, n = 1000) %>% 
+  ggplot(aes(x = pH, y = presence)) +
+  geom_point() +
+  #facet_grid(~ Temperature > 13, scales = "free_x") +
+  stat_lineribbon(aes(y = .value), .width = c(.95, .5)) +
+  scale_fill_brewer() +
+  ggtitle("Hematodinium_449") +
+  theme(legend.position = "none")  +
+  theme(plot.title = element_text(size = 10))
+
+Karlodinium_8ed_envirPlot <- plottingDataset %>%
+  filter(Taxon == "Karlodinium_8ed") %>% 
+  mutate(TempStd = (Temperature - mean(Temperature))/sd(Temperature),
+         pHStd = (pH - mean(pH))/sd(pH),
+         SalinityStd = (Salinity - mean(Salinity))/sd(Salinity)) %>% 
+  add_fitted_draws(Karlodinium_8ed_bestEnvirModel, n = 1000) %>% 
+  ggplot(aes(x = Temperature, y = presence)) +
+  geom_point() +
+  facet_grid(~ Season, scales = "free_x") +
+  stat_lineribbon(aes(y = .value), .width = c(.95, .5)) +
+  scale_fill_brewer() +
+  ggtitle("Karlodinium_8ed") +
+  theme(legend.position = "none")  +
+  theme(plot.title = element_text(size = 10))
+
+Karlodinium_a27_envirPlot <- plottingDataset %>%
+  filter(Taxon == "Karlodinium_a27") %>% 
+  mutate(TempStd = (Temperature - mean(Temperature))/sd(Temperature),
+         pHStd = (pH - mean(pH))/sd(pH),
+         SalinityStd = (Salinity - mean(Salinity))/sd(Salinity)) %>% 
+  add_fitted_draws(Karlodinium_a27_bestEnvirModel, n = 1000) %>% 
+  ggplot(aes(x = pH, y = presence)) +
+  geom_point() +
+  facet_grid(~ Season, scales = "free_x") +
+  stat_lineribbon(aes(y = .value), .width = c(.95, .5)) +
+  scale_fill_brewer() +
+  ggtitle("Karlodinium_a27") +
+  theme(legend.position = "none")  +
+  theme(plot.title = element_text(size = 10))
+
+Pseudonitzschia_4e5_envirPlot <- plottingDataset %>%
+  filter(Taxon == "Pseudonitzschia_4e5") %>% 
+  mutate(TempStd = (Temperature - mean(Temperature))/sd(Temperature),
+         pHStd = (pH - mean(pH))/sd(pH),
+         SalinityStd = (Salinity - mean(Salinity))/sd(Salinity)) %>% 
+  add_fitted_draws(Pseudonitzschia_4e5_bestEnvirModel, n = 1000) %>% 
+  ggplot(aes(x = Salinity, y = presence)) +
+  geom_point() +
+  #facet_grid(~ Season, scales = "free_x") +
+  stat_lineribbon(aes(y = .value), .width = c(.95, .5)) +
+  scale_fill_brewer() +
+  ggtitle("Pseudonitzschia_4e5") +
+  theme(legend.position = "none")  +
+  theme(plot.title = element_text(size = 10))
+
+Pseudonitzschia_d36_envirPlot <- plottingDataset %>%
+  filter(Taxon == "Pseudonitzschia_d36") %>% 
+  mutate(TempStd = (Temperature - mean(Temperature))/sd(Temperature),
+         pHStd = (pH - mean(pH))/sd(pH),
+         SalinityStd = (Salinity - mean(Salinity))/sd(Salinity)) %>% 
+  add_fitted_draws(Pseudonitzschia_d36_bestEnvirModel, n = 1000) %>% 
+  ggplot(aes(x = Salinity, y = presence)) +
+  geom_point() +
+  facet_grid(~ Season, scales = "free_x") +
+  stat_lineribbon(aes(y = .value), .width = c(.95, .5)) +
+  scale_fill_brewer() +
+  ggtitle("Pseudonitzschia_d36") +
+  theme(legend.position = "none")  +
+  theme(plot.title = element_text(size = 10))
+
+Pseudonitzschia_d40_envirPlot <- plottingDataset %>%
+  filter(Taxon == "Pseudonitzschia_d40") %>% 
+  mutate(TempStd = (Temperature - mean(Temperature))/sd(Temperature),
+         pHStd = (pH - mean(pH))/sd(pH),
+         SalinityStd = (Salinity - mean(Salinity))/sd(Salinity)) %>% 
+  add_fitted_draws(Pseudonitzschia_d40_bestEnvirModel, n = 1000) %>% 
+  ggplot(aes(x = Salinity, y = presence)) +
+  geom_point() +
+  #facet_grid(~ Season, scales = "free_x") +
+  stat_lineribbon(aes(y = .value), .width = c(.95, .5)) +
+  scale_fill_brewer() +
+  ggtitle("Pseudonitzschia_d40") +
+  theme(legend.position = "none") +
+  theme(plot.title = element_text(size = 10)) 
+
+
+grid.arrange(Alexandrium_2b2_envirPlot, Alexandrium_3fc_envirPlot, Hematodinium_449_envirPlot, Karlodinium_8ed_envirPlot,  
+             Karlodinium_a27_envirPlot, Pseudonitzschia_4e5_envirPlot, Pseudonitzschia_d36_envirPlot, Pseudonitzschia_d40_envirPlot,
+             nrow = 2)
+```
+
+\normalsize
+
+## Biological Context
+
+To identify the biological community associated with our focal lineages, we searched for co-occurring taxa using a canonical analysis of principal coordinates (CAP) [@anderson2003canonical]. Constraining this multivariate analysis according to the presence or absence of each potential harmful algal variant revealed no striking patterns of association across taxa (Tables S4-S11), but rather helped to identify individual community members particularly likely or unlikely to co-occur with our focal lineages. These associated community members were those with the strongest deviations from 0 on the CAP1 axis (Table 3), and included lineages of *Ditylum*, a centric diatom, *Prasinoderma*, a non-harmful green algae, *Saxidomus*, a clam, *Balanus*, a barnacle, and *Calanus*, a copepod.  
+
+
+\small
+```{r Table 4 CAP top associated taxa , echo=F, message=F, warning=F, include = T}
+
+#First, full info. for supplement:
+
+for (i in focalTaxa){
+  assign(paste0(i, "_capsupp"),
+         CAPSUPP_PRESABS(asv.edna.all10, i)
+         )
+}
+
+# write.csv(Alexandrium_2b2_capsupp, "../Submission_FrontiersEcolEvol_2020/Supplement/TableS4_Alexandrium_2b2_CAP.csv")
+# write.csv(Alexandrium_3fc_capsupp, "../Submission_FrontiersEcolEvol_2020/Supplement/TableS5_Alexandrium_3fc_CAP.csv")
+# write.csv(Hematodinium_449_capsupp, "../Submission_FrontiersEcolEvol_2020/Supplement/TableS6_Hematodinium_449_CAP.csv")
+# write.csv(Karlodinium_8ed_capsupp, "../Submission_FrontiersEcolEvol_2020/Supplement/TableS7_Karlodinium_8ed_CAP.csv")
+# write.csv(Karlodinium_a27_capsupp, "../Submission_FrontiersEcolEvol_2020/Supplement/TableS8_Karlodinium_a27_CAP.csv")
+# write.csv(Pseudonitzschia_4e5_capsupp, "../Submission_FrontiersEcolEvol_2020/Supplement/TableS9_Pseudonitzschia_4e5_CAP.csv")
+# write.csv(Pseudonitzschia_d36_capsupp, "../Submission_FrontiersEcolEvol_2020/Supplement/TableS10_Pseudonitzschia_d36_CAP.csv")
+# write.csv(Pseudonitzschia_d40_capsupp, "../Submission_FrontiersEcolEvol_2020/Supplement/TableS11_Pseudonitzschia_d40_CAP.csv")
+
+for (i in focalTaxa){
+  assign(paste0(i, "_comm"),
+         CAPCOMM_PRESABS(asv.edna.all10, i)
+         )
+}
+
+#Now table of top associates with strength
+CAPtable <- rbind(Alexandrium_2b2_comm, Alexandrium_3fc_comm, Hematodinium_449_comm, Karlodinium_8ed_comm, Karlodinium_a27_comm, Pseudonitzschia_4e5_comm, Pseudonitzschia_d36_comm, Pseudonitzschia_d40_comm) %>% 
+  rownames_to_column("Taxon") %>% 
+  mutate(CAP1 = abs(CAP1))
+
+CAPtable$Taxon <- focalTaxa
+
+pander(CAPtable, split.table = Inf, caption = "Table 3: Predictor taxa with highest positive associations to eight focal algal lineages by CAP.")
+
+```
+\normalsize
+
+```{r Improving Models With Biology, echo = F, message = F, warning = F, include = F}
+tempdataset <- asv.count.all.enviro %>% 
+  separate(sample, into = c("Site", "Month", "Year", "z")) %>%
+  mutate(Season = ifelse(Month %in% c("10","11","12","1","2","3"), "Winter", "Summer")) %>%
+  mutate(presence = ifelse(nReads > 0, 1, 0)) %>%
+  filter(pH > 7.5) %>%
+  filter(Taxon %in% c("Hematodinium_449", "Saxidomus_33e", "Chrysochromulina_7aa", "Cylindrotheca_799")) %>% 
+  mutate(TempStd = (Temperature - mean(Temperature))/sd(Temperature),
+         pHStd = (pH - mean(pH))/sd(pH),
+         SalinityStd = (Salinity - mean(Salinity))/sd(Salinity)) %>% 
+  pivot_wider(id_cols = c(TempStd, pHStd, SalinityStd, Season),
+              names_from = Taxon,
+              values_from = presence)
+
+
+Hematodinium_449_envir_model <- readRDS("../BayesianLogisticModels_Environmental/Hematodinium_449_BestModel.RDS")
+
+Hematodinium_449_combined_model1 <- readRDS(
+  "../BayesianLogisticModels_EcolEnviroCombined/Hematodinium_449_combined_model.RDS"
+)
+
+#adding biology improves the pres/abs predictions
+PREDERROR(Hematodinium_449_envir_model, tempdataset, outcomename = "Hematodinium_449")
+PREDERROR(Hematodinium_449_combined_model1, tempdataset, outcomename = "Hematodinium_449")
+
+```
+
+For each of our focal lineages, adding the most closely associated predictor taxon improved model fit even after accounting for the additional model complexity (Table 4). Thus, including information about co-occurring organisms alongside baseline environmental covariates substantially increased our ability to predict the presence of these potential harmful algal taxa within the scope of our sampling. For example, Hematodinium_449 occurs somewhat stochastically in space and time (Figure 2) and is not strongly associated with environmental covariates (Table 2). However, the CAP analysis revealed that a haplotype from the clam genus *Saxidomus* (likely the species *S. giganteus* (butter clam), given the sampling location), was routinely found in samples in which *Hematodinium* also occurred (Table 3). Adding *Saxidomus* as a term in the previous best-fit model more than doubles the model's overall accuracy (Figure 4). All else being equal, when Saxidomus DNA is detected, it more than quadruples the likelihood of *Hematodinium* being detected (`r sum(Hematodinium_449_combined_model1$coefficients[c(1,4)]) %>% invLogit() %>% round(2)` vs. `r sum(Hematodinium_449_combined_model1$coefficients[c(1,5)]) %>% invLogit() %>% round(2)` mean detection probability), making this biological variable a far better predictor than the measured environmental variables alone. 
+
+Performing the same analysis for each of our focal lineages yields similar results (Figure 4), demonstrating an overall model accuracy substantially above environmental covariates alone for most potential harmful algal variants. Specifically, adding these candidate indicator taxa improved the true-positive rate of detection for six of the eight models (Karlodinium_8ed and Pseudonitzschia_d36 are the exceptions), which accounted for the increase in overall accuracy across models. 
+
+ 
+```{r PlotAccuracyComparison, echo = F, message = F, warning = F, fig.width=7.8, fig.path='../figures/', fig.cap="Figure 4: In-sample predictive value of best-fit models for eight focal algal lineages, as measured by accuracy, true-negative rate, and true-positive rate. Red dots indicate values for models combining environmental information with a single associated predictor taxon; blue dots indicate values for models with environmental information alone. Where only a single dot is visible, models produced equivalent results.", dpi = 300}
+
+SummaryChart <- data.frame(
+  Taxon = NA,
+  EnviroModel_Accuracy = NA,
+  EnviroModel_TruePositiveRate = NA,
+  EnviroModel_TrueNegativeRate = NA,
+  CombinedModel_Accuracy = NA,
+  CombinedModel_TruePositiveRate = NA,
+  CombinedModel_TrueNegativeRate = NA,
+  CombinedModel_Terms = NA
+)
+
+for (i in 1:length(focalTaxa)){
+  EnvironmentalModel <- readRDS(paste0("../BayesianLogisticModels_EcolEnviroCombined/",focalTaxa[i],"_envir_model.RDS"))
+  CombinedModel <- readRDS(paste0("../BayesianLogisticModels_EcolEnviroCombined/",focalTaxa[i],"_combined_model.RDS"))
+  tempdataset <- readRDS(paste0("../BayesianLogisticModels_EcolEnviroCombined/",focalTaxa[i],"_tempdataset.RDS"))
+  
+  SummaryChart[i,1] <- focalTaxa[i]
+  SummaryChart[i, 2:4] <- PREDERROR(EnvironmentalModel, tempdataset, focalTaxa[i])
+  SummaryChart[i, 5:7] <- PREDERROR(CombinedModel, tempdataset, focalTaxa[i])
+  SummaryChart[i,8] <- as.character(CombinedModel$formula)[3]
+}
+
+forSegments <- SummaryChart %>% 
+  select(-CombinedModel_Terms) %>% 
+  pivot_longer(cols = -Taxon, names_to = "Measure", values_to = "Value") %>% 
+  separate(Measure, into = c("Model","Measure")) %>% 
+  group_by(Taxon, Measure) %>% 
+  summarize(minValue = min(Value),
+            maxValue = max(Value))
+
+SummaryChart %>% 
+  select(-CombinedModel_Terms) %>% 
+  pivot_longer(cols = -Taxon, names_to = "Measure", values_to = "Value") %>% 
+  separate(Measure, into = c("Model","Measure")) %>% 
+  group_by(Taxon) %>% 
+  ggplot(aes(x = Measure, y = Value, color = Model)) +
+      facet_grid(~ Taxon) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1),
+            legend.position = "bottom") +
+      theme(strip.text.x = element_text(size = 6))+
+      geom_segment(data = forSegments, aes(x = Measure, xend = Measure,
+                       y = minValue, yend = maxValue), color = "Black") +
+       geom_point() +
+      ylab("In-Sample Predictive Value") +
+      xlab("") +
+      scale_color_discrete(labels = c("Combined", "Environmental")) 
+
+```
+
+\small
+```{r Table of Combined Best-Fit Models , echo = F}
+
+
+SummaryChart[1, 8] <- "Temperature + pH + (Intercept | Ditylum presence)"
+SummaryChart[2, 8] <- "(Intercept + Temperature | Season) + (Intercept | Prasinoderma presence)"
+SummaryChart[3, 8] <- "pH + Temperature + (Intercept | Saxidomus presence)"
+SummaryChart[4, 8] <- "(Temperature | Season) + (Intercept | Ditylum presence)"
+SummaryChart[5, 8] <- "pH + (Salinity | Season) + (Intercept | Balanus presence)"
+SummaryChart[6, 8] <- "Salinity + Temperature + pH + (Intercept | Calanus presence)"
+SummaryChart[7, 8] <- "Salinity + pH + (Intercept | Calanus presence)"
+SummaryChart[8, 8] <- "Salinity + (Intercept | Ditylum presence)"
+
+colnames(SummaryChart) <- c("Taxon", "Combined Environmental and Biological Model")
+
+SummaryChart[,c(1,8)] %>% 
+  pander(split.table = Inf, caption = "Table 4: Terms of the best-fit models combining environmental variables and most closely associated biological taxon for eight focal algal lineages.")
+```
+\normalsize
+
+
+# Discussion
+
+Here, we use genetic monitoring to highlight a wide variety of putative harmful algal taxa from a larger set of several hundred taxa in intertidal and nearshore marine habitats. Within these prospective harmful algal groups, we find several variants from lineages that are unexpected in the study area (*Karlodinium*, *Hematodinium*), in addition to cryptic lineages of others (most notably, *Alexandrium* sp.), and multiple variants of economically important taxa (e.g. *Pseudo-nitzschia*). Our time-series sampling indicates different seasonal patterns and attendant associations of sea-surface temperature, pH, and salinity for some of these lineages, but on the whole, models using purely environmental covariates offer poor predictive value. We therefore use a constrained ordination to identify taxa (both algal and non-algal) that commonly occur in association with our focal lineages; adding only a single prospective biological indicator taxon greatly improved most of the predictive models. 
+
+## Detecting Expected and Unexpected Harmful Algal Taxa
+
+eDNA metabarcoding has a number of distinct advantages relative to common techniques currently used to identify harmful algae. First, this technique can reveal a diversity of potential harmful algal variants present, rather than targeting specific species. In our survey of intertidal and nearshore communities using broad-spectrum eukaryotic mitochondrial COI primers, the taxa we identified were largely consistent with what we expected *a priori*, in that we found dozens of variants with excellent overlap from records of known local harmful algal genera [Table 1; @UNESCO; @trainer2016soundtoxins; @horner1993toxic; @horner1997harmful], such as three from the genus *Pseudo-nitzschia*, which is represented by multiple species in the Puget Sound [@hubbard2014molecular]. While confirming expectations demonstrates the reliability of eDNA metabarcoding for identification, detecting unexpected taxa underscores the ability of this technique to reveal novel lineages, range-shifts, or nascent invasions with potentially profound ecological and economic consequences. For example, the genus *Alexandrium*, though known to cause paralytic shellfish poisoning in the region [@trainer2016soundtoxins], was not previously understood to have two distinct seasonal forms (see below). Additionally, members of *Karlodinium* produce karlotoxins responsible for fish kills in the United States and globally (e.g. *Karlodinium veneficum* [@place2012karlodinium]), yet this genus is not reported from Puget Sound in the peer-reviewed scientific literature, despite having been noted by a local monitoring program [@king]. Similarly, member(s) of the genus *Hematodinium*, which have caused massive losses for the tanner crab (*Chionoecetes bairdi*) and snow crab (*C. opilio*) fisheries in the United States [@meyers1987bitter; @meyers1996distribution; @wood2017annual] and among other species worldwide [@stentiford2005review], have also not previously been reported within Puget Sound in the peer-reviewed scientific literature.
+
+Additionally, eDNA metabarcoding can help to standardize data collection and analysis across studies. Here we employ samples collected with two distinct methods by two groups: intertidal water was gathered on foot and by hand, whereas nearshore water was gathered by boat on the Washington Ocean Acidification Cruise in a more routinized process. Nonetheless, potential harmful algal taxa identified in nearshore surface samples were all found within the larger intertidal dataset as well, suggesting excellent agreement despite differences in methods and personnel. Such congruence between studies also arises from how the data are analyzed: eDNA sequences from multiple studies can consistently identify cryptic taxa by sequence [e.g. @uchii2016novel; @thomsen2015environmental], and can undergo identical taxonomic analyses that are not subject to differences in interpretation via morphology [@proschold2007systematics]. However, we note that the success of eDNA studies rests heavily on the shoulders of expert taxonomists: without their contributions to the identification of specimens with sequences in databases, it is impossible to link a fragment of DNA found in the water to an organism [@zimmermann2014taxonomic; @manoylov2014taxonomic].
+
+## Species Distributions in Space and Time
+
+Our spatial and temporal data indicate that many putative harmful algal taxa are constitutively present in the intertidal and nearshore environment, or at the very least are routinely detectable (Table 1; Figure 2). Although challenges in relating sequence counts to absolute organism abundances limit the utility of eDNA metabarcoding for precise measurement of bloom intensity, the ability of eDNA to reveal harmful algal taxa even when cell counts are much lower than bloom conditions can be advantageous. For example, we detect *Alexandrium* variants year-round in Hood Canal, including winters, when recorded *Alexandrium* blooms are rare, but when fisheries closures due to presence of paralytic shellfish toxin do exist [@moore2011past; @trainer2003paralytic]. When paired with more traditional methods, this tool therefore provides another layer of information regarding the behavior of harmful algae, and at the very least can indicate a temporal and spatial starting place for more time-, labor-, and taxonomic expertise-intensive counting strategies. 
+
+Sampling many taxa over time and space additionally facilitates important within- and cross-species comparisons (Figure 2). Here, such comparisons reveal two lineages of *Alexandrium* with different temporal patterns, and completely non-overlapping distributions. Although taxonomic revisions of the *Alexandrium tamarense* species complex -- and competing classifications of local taxa [@lilly2007species; @John2014formal] -- make it impossible to identify the variants present in our survey without additional information, amino acid differences in the COI sequence of the two lineages alongside temporal distribution information suggest that they may represent distinct species, rather than haplotypes. Regardless, recognizing two distinct *Alexandrium* lineages with opposite seasonal dynamics is likely to be important to local monitoring and research programs aiming to identify risk of saxitoxin poisoning [e.g. @king; @trainer2016soundtoxins]. Previous work on *Alexandrium* within the Puget Sound found a lower limit for toxic bloom events at 13$^\circ$C [@nishitani1984recent], with recent work identifying higher growth of cells above 17-18$^\circ$C [@bill2016effects], and more frequent blooms accompanying warmer air and sea surface temperatures over multiple decades [@moore2009recent; @moore2011past]. Alexandrium_2b2, present nearly exclusively in winter, cold-water samples, does not match the profile expected given these studies, suggesting either that it does not bloom frequently and/or that it is a recent introduction to the local algal community, whose role is not yet appreciated.  
+
+Our dataset also underscores the dynamism and diversity of harmful algal taxa in local waters (Figure 2). For example, some unexpected variants in our dataset (e.g. Hematodinium_449 and Karlodinium_a27) are highly variable in space and time, while others are more consistent and widespread (e.g Karlodinium 8ed, which appears in 20 of 63 samples). These results indicate our method may reveal transient appearances as well as the well-established presence of understudied taxa in the region. Notably, members of the genus *Hematodinium* have been reported on the west coast of North America in the Bering Sea and Southeast Alaska [@meyers1987bitter; @meyers1996distribution; @jensen2010molecular; @small2012advances]. Likewise, *Karlodinium venificum* was first documented in San Francisco Bay in 2005, with continuing observations over the following decade [@usgs2019phytoplankton], but not elsewhere on the West Coast of North America [@UNESCO]. This study therefore adds evidence to reports of these taxa in nearby locales, suggesting that more work is necessary to track their presence in the Puget Sound region, where it is possible that they might impact important fisheries in the future. 
+
+Nucleotide variants from the genus *Pseudo-nitzschia* identified here are not unexpected; multiple species from this genus have been described locally using both visual [e.g. @trainer2016soundtoxins] and molecular tools [e.g. @hubbard2014molecular]. In the Western Pacific, clades of a single *Pseudo-nitzschia* species (*P. pungens*) with distinct ecological niches and hybrid zones have been documented [@kim2018revealing]; it is interesting to note that here we similarly find two *Pseudo-nitzschia* variants with distinct nucleotide but identical amino acid sequences at the COI locus. Based on their overlap in time and space, it is likely these represent haplotype lineages that have begun to diverge but are not yet distinct species. Additionally, the specific local antecedents of toxicity in *Pseudo-nitzschia* are still under study [e.g. @zhu2017understanding; @trick2018successional], with production of domoic acid historically limited to the outer coast of Washington [@trainer2017pseudo], but recently moving into Puget Sound [@trainer2007recent]. Revealing the diversity and pattern of genetic variants present in time and space by eDNA metabarcoding might thus support efforts to better characterize the causes underlying dangerous and costly *Pseudo-nitzschia* bloom events.
+
+## Environmental and Biological Context
+
+Quantitative models of each focal lineage with respect to environmental variables (Table 2), motivated by taxon-specific patterns in space and time (Figure 2), yield a synoptic view of the occurrence of many potentially harmful algal taxa in the region -- a perspective that is otherwise not easily achievable, though many detailed quantitative models have been built for individual harmful algal species [e.g. @moore2015present;@hubbard2014molecular]. Across taxa, we note that values expected with global climate change (higher sea surface temperature) and ocean acidification (lower pH) are typically associated with increases in the occurrence of our focal lineages, such as Alexandrium_2b2, Alexandrium_3fc, Hematodinium_449, and Karlodinium_a27. These results in sum align with other studies of local harmful algal taxa, suggesting future scenarios will involve greater seasonal windows of opportunity for toxic bloom events [e.g. @moore2011past;@trainer2020pelagic]. 
+
+Overall, however, the quantitative models we have built with environmental variables alone have low accuracy, and universally fail to predict a majority of occurrences for our focal lineages (Table 2). The difficulty of predicting the presence of harmful algal taxa and their blooms based on a limited number of environmental covariates is not atypical; building accurate models of these species' ecology has long been a challenge for the field [@flynn2018modeling], even when many more environmental covariates are considered. In this study, the variant Hematodinium_449 is an extreme representative of this challenge; our environmental model does not predict its presence correctly even once (Table 2), though it appears in 12 of 63 samples gathered. Similarly, Karlodinium_a27 and Pseudonitzchia_4e5 models both have true positive rates less than 0.25, according to their respective environmental models (Table 2). These models are consequently worse than uniformative; they can be actively misleading by inaccurately predicting the absence of harmful species. 
+
+Fortunately, eDNA metabarcoding provides an additional layer of information regarding the context of harmful algal taxa: the surrounding biological community members (both algal and non-algal). Specifically, the choice of universal eukaryotic primers amplifying a common molecular marker (mitochondrial COI) allows us to identify over 600 taxa in total, from more than 250 genera. These data enable us to associate the presence and absence of individual focal variants with a wide range of eukaryotes by CAP (Tables 3 and S4-S11). Studies such as this one that examine harmful algae within the breadth of their biological communities are rare, but provide an opportunity to improve prediction [e.g. @banerji2019evaluating]. Here, we see that adding only the single best predictor taxon to our quantitative models of focal lineages universally improves their fit (Table 5), justifying added model complexity. Although it may appear circular to identify co-occurring species in the dataset and subsequently add them into the model of the same dataset, use of WAIC allows us to assess the value of additional information for future out-of-sample data, generating testable hypotheses for harmful algal indicator species. As an example, adding the presence of an easily surveyed indicator taxon, a *Saxidomus* clam, improves the prediction of Hematodinium_449 dramatically, in particular the true-positive measure essential to management (Figure 4). The majority of focal lineages examined here similarly show an improvement in model accuracy driven by large increases in the true positive rate with addition of biological information. 
+
+# Conclusion
+
+In this study, we employ COI universal primers [@leray2013new] to simultaneously identify dozens of potentially harmful algal variants, as well as hundreds of other local taxa comprising the biological context for these harmful algae. The broad nature of eDNA metabarcoding surveys allows us to track both expected and unexpected taxa, and the distribution in time and space of eight focal variants from the genera *Alexandrium*, *Hematodinium*, *Karlodinium*, and *Pseudo-nitzschia* suggests the constitutive presence of harmful algae in the study region, as well the possibility of nascent range shifts, invasions, and/or ongoing evolutionary divergence. Building individual quantitative models for each of eight focal lineages, we find that many variants are likely to become more common under conditions of higher sea surface temperature and ocean acidification, but note that models using environmental covariates alone have low explanatory power.  Adding even a single associated member of the biological community, however, improves most models, and in particular boosts the true positive rates useful for prediction of harmful algal taxa in the field. eDNA metabarcoding is hence an opportunity to reveal harmful algae outside of bloom events and expected ranges, to map phylogenetic complexity underlying HAB dynamics, to interrogate the relevant environmental context in an era of global change, and to improve models of harmful algal prediction with inclusion of the biological milieu. 
+
+# Acknowledgements
+
+We thank the Washington Ocean Acidification Center (WOAC) National Oceanic and Atmospheric Administration Harmful Algal Blooms (NOAA HABs) program cruise, and in particular Simone Alin for her provision of samples and environmental data, as well as Terrie Klinger and Jan Newton for their expert comments on the manuscript. We thank our colleagues at the NOAA Northwest Fisheries Science Center, including the Conservation Biology Molecular Genetics Laboratory for their use of the Illumina MiSeq, as well as Linda Rhodes, Stephanie Moore, Vera Trainer, and Nic Adams for their direction of the analysis in its early stages. We thank Micah Horwith and the Washington State Department of Natural Resources for field assistance. Finally, we thank Alex Gagnon, in whose lab we performed carbonate chemistry analysis for the intertidal dataset, and the lab groups in the University of Washington's Center for Environmental Genomics, with whom we share a work space.
+
+# References
