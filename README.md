@@ -30,20 +30,20 @@ The starting point of the taxonomical annotation of these sequences is the outpu
 Follow the main script under `Manuscript/Submission_FrontiersEcolEvol_2020/Jacobs-Palmer_Frontiers_2020.Rmd`.
 To knit your own copy of the manuscript, figures and results, you need to clone this repository and run the above Rmarkdown. You need these Rpackages installed:
    
-   *"tidyverse",
-   *"lubridate",
+   * "tidyverse",
+   * "lubridate",
    * "vegan",
    * "seacarb",
    * "modelr",
-   *"broom",
-   *"pander",
-   *"gridExtra",
+   * "broom",
+   * "pander",
+   * "gridExtra",
    * "here",
    * "tidymodels",
-   *"rstanarm",
-   *"loo",
-   *"tidybayes",
-   *"bayesplot"
+   * "rstanarm",
+   * "loo",
+   * "tidybayes",
+   * "bayesplot"
 
 ## Supplementary Figures and Tables
 
