@@ -1,0 +1,85 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+# Checking KC's run 
+
+library (tidyverse)
+library (insect)
+library (seqinr)
+
+ASV <- read_csv("../../Analysis/After_CleanUP/ASV_table_all_together.csv")
+
+Hash <- read_csv("../../Analysis/After_CleanUP/Hash_Key_all_together.csv")
+
+# Also load previous insect results
+
+previous.insect <- read_csv("../../../OA_eDNA/Data/4.Taxonomic_annotation/last.insect.csv")
+
+```
+
+Let's id all new sequences
+
+```{r new hashes}
+
+# Filter new Hashes
+Hash %>% 
+  filter(!Hash %in% previous.insect$representative) -> new.aditions
+# Write a fasta file for Blast
+write.fasta(sequences = as.list(new.aditions$Sequence),
+            names = as.list(new.aditions$Hash),
+            file.out = "New.sequences.fasta")
+# Transform it to a DNABIN class for insect 
+new.aditions <- char2dna(new.aditions$Sequence)
+
+names (new.aditions) <- Hash %>% 
+  filter(!Hash %in% previous.insect$representative) %>% pull(Hash)
+
+new.aditions
+
+
+```
+
+```{r Classify the hell out of it}
+
+tree_2 <- readRDS("/Users/ramongallego/GoogleDrive/Kelly_Lab/Projects/OA_eDNA/Data/4.Taxonomic_annotation/classifier.rds")
+
+clasif.hases.addittion <- classify(x = new.aditions, 
+                                  tree = tree_2,
+                                  cores = "autodetect")
+
+
+```
+
+```{r}
+clasif.hases.addittion %>%  
+  filter (str_detect(family, "Syngnathidae"))
+  filter(class == "Mammalia")
+```
+Now we will load the full database that has a lot of sequences
+```{r merge both insect runs}
+
+
+
+previous.insect %>% 
+  filter(representative %in% Hash$Hash) %>% 
+  bind_rows(clasif.hases.addittion) -> all.taxonomy.Kelly
+
+
+```
+
+Now we write as an .csv file for Kelly to use this in her decontamination script
+
+```{r write}
+
+all.taxonomy.Kelly %>% 
+  write_csv("Taxonomy.WOAC.csv")
+
+```
+

@@ -1,0 +1,51 @@
+Swarm 2.2.2 [Jun 12 2018 11:50:53]
+Copyright (C) 2012-2017 Torbjorn Rognes and Frederic Mahe
+https://github.com/torognes/swarm
+
+Mahe F, Rognes T, Quince C, de Vargas C, Dunthorn M (2014)
+Swarm: robust and fast clustering method for amplicon-based studies
+PeerJ 2:e593 https://doi.org/10.7717/peerj.593
+
+Mahe F, Rognes T, Quince C, de Vargas C, Dunthorn M (2015)
+Swarm v2: highly-scalable and high-resolution amplicon clustering
+PeerJ 3:e1420 https://doi.org/10.7717/peerj.1420
+
+CPU features:      mmx sse sse2 sse3 ssse3 sse4.1 sse4.2 popcnt avx avx2
+Database file:     Hash.for.swarm.fasta
+Output file:       Swarm.out
+Statistics file:   Swarm.stats
+Resolution (d):    1
+Threads:           4
+Break OTUs:        Yes
+Fastidious:        Yes, with boundary 3
+
+Reading database:  100%
+Indexing database: 100%
+Database info:     1660159 nt in 5275 sequences, longest 367 nt
+Hashing sequences: 100%
+Clustering:        100%
+
+Results before fastidious processing:
+Number of swarms:  3962
+Largest swarm:     37
+
+Counting amplicons in heavy and light swarms 100%
+Heavy swarms: 3960, with 5273 amplicons
+Light swarms: 2, with 2 amplicons
+Total length of amplicons in light swarms: 629
+Bloom filter: bits=16, m=70448, k=11, size=0.0MB
+Adding light swarm amplicons to Bloom filter 100%
+Generated 4229 variants from light swarms
+Checking heavy swarm amplicons against Bloom filter 100%
+Heavy variants: 11149608
+Got 2 graft candidates
+Grafting light swarms on heavy swarms 100%
+Made 1 grafts
+
+Writing swarms:    100%
+Writing seeds:     100%
+Writing stats:     100%
+
+Number of swarms:  3961
+Largest swarm:     37
+Max generations:   4

@@ -1,0 +1,87 @@
+---
+title: "Create a fasta file for ASVs"
+output:
+  html_document:
+    df_print: paged
+---
+
+We want to collapse all the ASVs into OTUs. Although ASV represent fairly the original reality that went into the MiSeq, it is unclear how much diversity was artificially created by the 60+ PCR cycles
+
+We will start by making a FASTA file in the format swarm needs - HAsh_abundance as header
+
+```{r load packages}
+library (tidyverse)
+library (seqinr)
+library (here)
+
+```
+
+Lets load the data
+
+```{r load data}
+
+ASV.abundance <- read_csv(here("Manuscript", "data" , "20190719_MultiHAB_ASV.csv")) %>% 
+  arrange(desc(nTotal))
+
+ASV.seqs <- read_csv(here("Manuscript", "data" ,"20190719_MultiHAB_Hash.csv"))
+
+```
+
+
+
+```{r merge}
+
+left_join(ASV.abundance, ASV.seqs, by = "Hash") %>% 
+  unite(Hash, nTotal, sep = ";size=", col = "Hash")-> ASV.seqs
+
+write.fasta (sequences = as.list(ASV.seqs$Sequence),
+             names = as.list(ASV.seqs$Hash),
+             file.out = "Hash.for.swarm.fasta")
+
+```
+
+## Use swarm 
+
+```{bash }
+
+swarm \
+ 	--differences 1 \
+	--fastidious \
+	--threads 4 \
+	--output-file "Swarm.out" \
+	--log "Swarm.log" \
+	--statistics-file "Swarm.stats" \
+	--seeds "Swarm.out.fasta" \
+	--usearch-abundance \
+	"Hash.for.swarm.fasta"
+
+```
+
+Get the outputs
+
+```{bash }
+awk 'BEGIN{
+            print "Query,Match"
+          }
+          {
+            c = split($0, s);
+            for(n=1; n<=c; ++n)
+            print s[n] "," $1
+          }' "Swarm.out" |\
+sed  's/;size=[0-9]*//g'> "Swarm.otu.map"
+
+
+```
+
+Create a new OTU table
+
+```{r}
+ OTU.conversion <- read_csv("Swarm.otu.map")
+ASV.original <- read_csv("../20190719_MultiHAB_ASV_samples.csv")
+left_join(ASV.original, OTU.conversion, by = c("Hash" = "Query")) %>% 
+  select ( Match, sample,  nReads) %>% 
+  group_by(Hash = Match, sample) %>% 
+  summarise (nReads = sum (nReads)) %>% 
+  write_csv("20190719_MultiHAB_Swarm_samples.csv")
+```
+
